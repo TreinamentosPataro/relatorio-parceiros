@@ -1,0 +1,40 @@
+# Segredos e configurações locais
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+.venv/
+venv/
+
+# Testes, lint e cobertura
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE e sistema operacional
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Bancos, relatórios e dados gerados
+*.db
+*.sqlite
+*.sqlite3
+reports/generated/
+storage/
+output/
+
+# Artefatos locais e temporários
+tmp/
+.sites-runtime/
+.vercel/
+dist/
+build/

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "partner-reports"
+version = "0.1.0"
+description = "Plataforma multiparceiro de relatórios jurídicos"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.16,<2",
+  "argon2-cffi>=23.1,<26",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "jinja2>=3.1,<4",
+  "pypdf>=6,<7",
+  "playwright>=1.54,<2",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<10",
+  "pytest-cov>=6,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+audit-advbox = "partner_reports.integrations.advbox.audit_cli:main"
+validate-advbox-linkage = "partner_reports.integrations.advbox.linkage_cli:main"
+sync-advbox = "partner_reports.jobs.sync_cli:main"
+homologate-advbox = "partner_reports.jobs.homologation_cli:main"
+portal-user = "partner_reports.web.user_cli:main"
+seed-portal-demo = "partner_reports.web.demo_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"partner_reports.reports" = ["templates/*.j2", "assets/*.css"]
+"partner_reports.web" = ["templates/*.j2", "assets/*.css"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+  "database: requires the migrated PostgreSQL development database",
+  "browser: requires bundled Chromium in the development image",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"

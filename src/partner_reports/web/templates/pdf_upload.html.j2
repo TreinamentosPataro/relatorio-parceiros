@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Enviar PDF da carteira · Plataforma interna</title><link rel="stylesheet" href="/portal/assets.css"></head>
+<body>
+  <a class="skip-link" href="#main">Ir para o conteúdo</a>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="/portal/partners"><span class="brand-mark" aria-hidden="true">P</span><span>Relatórios<span class="brand-sub">/ Parceiros</span></span></a><div class="header-actions"><span class="user-label">{{ user.display_name or 'Usuário interno' }}</span><form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">Sair</button></form></div></div></header>
+  <main class="container" id="main">
+    <a class="back-link" href="/portal/partners">← Voltar aos parceiros</a>
+    <div class="page-heading"><div><p class="eyebrow">Importação privada</p><h1>Enviar PDF da carteira</h1><p class="muted">Use somente o PDF original exportado do módulo Parceiros, sem destaques, comentários, formulários ou anexos.</p></div></div>
+    {% if error %}<div class="notice" role="alert"><strong>Envio não concluído.</strong> {{ error }}</div>{% endif %}
+    <section class="panel action-panel">
+      <form method="post" action="/portal/imports/new" enctype="multipart/form-data" class="filter-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div class="field"><label for="partner_id">Parceiro</label><select id="partner_id" name="partner_id" required><option value="">Selecione</option>{% for partner in partners %}<option value="{{ partner.id }}">{{ partner.name }} · {{ partner.external_id }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="period_start">Início do período</label><input id="period_start" name="period_start" type="date" required></div>
+        <div class="field"><label for="period_end">Fim do período</label><input id="period_end" name="period_end" type="date" required></div>
+        <div class="field"><label for="source_pdf">PDF original</label><input id="source_pdf" name="source_pdf" type="file" accept="application/pdf,.pdf" required><span class="muted">PDF A4 retrato, até {{ max_mib }} MiB e 200 páginas.</span></div>
+        <button class="button button-primary" type="submit">Enviar para validação</button>
+      </form>
+    </section>
+  </main><footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
+</body>
+</html>

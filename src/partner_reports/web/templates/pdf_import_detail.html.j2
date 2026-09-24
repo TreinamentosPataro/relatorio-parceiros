@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Importação recebida · Plataforma interna</title><link rel="stylesheet" href="/portal/assets.css"></head>
+<body>
+  <a class="skip-link" href="#main">Ir para o conteúdo</a>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="/portal/partners"><span class="brand-mark" aria-hidden="true">P</span><span>Relatórios<span class="brand-sub">/ Parceiros</span></span></a><div class="header-actions"><span class="user-label">{{ user.display_name or 'Usuário interno' }}</span><form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">Sair</button></form></div></div></header>
+  <main class="container" id="main">
+    <a class="back-link" href="/portal/imports/new">← Nova importação</a>
+    <div class="page-heading"><div><p class="eyebrow">Importação privada</p><h1>Arquivo recebido</h1><p class="muted">O documento está em quarentena e ainda não foi interpretado, reconciliado ou publicado.</p></div><span class="status-pill status-large">{{ batch.state }}</span></div>
+    <section class="panel list-panel" aria-label="Metadados técnicos"><div class="table-wrap"><table><tbody>
+      <tr><th scope="row">Parceiro</th><td>{{ partner.name }}</td></tr>
+      <tr><th scope="row">Período</th><td>{{ batch.period_start.strftime('%d/%m/%Y') }}–{{ batch.period_end.strftime('%d/%m/%Y') }}</td></tr>
+      <tr><th scope="row">Páginas</th><td>{{ source.page_count }}</td></tr>
+      <tr><th scope="row">Tamanho</th><td>{{ '%.2f'|format(source.byte_size / 1048576) }} MiB</td></tr>
+      <tr><th scope="row">Identificador do lote</th><td class="mono">{{ batch.id }}</td></tr>
+    </tbody></table></div></section>
+  </main><footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
+</body>
+</html>

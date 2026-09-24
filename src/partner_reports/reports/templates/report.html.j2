@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+  <title>Prévia da carteira · {{ partner_code }}</title>
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+  <main class="sheet">
+    <header class="masthead">
+      <div class="masthead-row">
+        <div class="brand"><span class="brand-symbol">P</span><span>RELATÓRIOS DE PARCERIA</span></div>
+        <span class="preview-tag">PRÉVIA SINTÉTICA · NÃO PUBLICAR</span>
+      </div>
+      <div class="hero">
+        <div>
+          <p class="eyebrow">ACOMPANHAMENTO DE CARTEIRA</p>
+          <h1>Uma visão clara do<br>que está confirmado.</h1>
+          <p class="hero-copy">Fotografia técnica da carteira com lacunas explicitadas, sem inferir conclusões jurídicas ou financeiras.</p>
+        </div>
+        <div class="partner-panel">
+          <span class="small-label">PARCEIRO</span>
+          <strong>{{ partner_code }}</strong>
+          <span class="small-label">PERÍODO</span>
+          <span>{{ period_start }} — {{ period_end }}</span>
+          <span class="small-label">ATUALIZADO EM</span>
+          <span>{{ updated_at }}</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="intro section-block" aria-labelledby="overview-title">
+      <div class="section-head">
+        <div><p class="eyebrow">01 / PANORAMA</p><h2 id="overview-title">Resumo executivo</h2></div>
+        <span class="rule-pill">Relatório v{{ version }} · {{ rule_version }}</span>
+      </div>
+      <p class="body-copy">A fotografia distingue clientes únicos de processos. Os três indicadores jurídicos legados podem se sobrepor e aguardam definição formal; não são somados ao total da carteira.</p>
+      <div class="metric-grid">
+        <article class="metric-card"><span>CLIENTES ÚNICOS</span><strong>{{ customer_count }}</strong><small>Pessoas com vínculo técnico elegível</small></article>
+        <article class="metric-card"><span>PROCESSOS / PASTAS</span><strong>{{ case_count }}</strong><small>Casos distintos na carteira</small></article>
+      </div>
+      <div class="pending-strip"><span class="dot"></span><span>Benefícios concedidos, em financeiro e em judicial: <strong>em validação</strong>.</span></div>
+    </section>
+
+    {% if alerts %}
+    <section class="section-block" aria-labelledby="quality-title">
+      <div class="section-head"><div><p class="eyebrow">02 / QUALIDADE</p><h2 id="quality-title">O que merece atenção</h2></div></div>
+      <div class="alert-list">
+      {% for alert in alerts %}
+        <div class="alert-item"><span class="alert-icon">!</span><span>{{ alert.label }}</span><strong>{% if alert.available %}{{ alert.count }}{% else %}Em validação{% endif %}</strong></div>
+      {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if distributions %}
+    <section class="section-block" aria-labelledby="distribution-title">
+      <div class="section-head"><div><p class="eyebrow">03 / DISTRIBUIÇÃO</p><h2 id="distribution-title">Composição da carteira</h2></div></div>
+      {% for distribution in distributions %}
+      <div class="distribution-panel"><h3>{{ distribution.label }}</h3>
+        {% for item in distribution.items %}
+        <div class="bar-row"><span>{{ item.label }}</span><div class="bar-track"><div class="bar-fill" style="width:{{ item.percent }}%"></div></div><strong>{{ item.count }}</strong></div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="section-block cases-section" aria-labelledby="cases-title">
+      <div class="section-head"><div><p class="eyebrow">{% if distributions %}04{% else %}03{% endif %} / CARTEIRA</p><h2 id="cases-title">Processos associados</h2></div><span class="count-pill">{{ case_count }} casos</span></div>
+      {% if cases %}
+      <div class="table-wrap"><table class="case-table">
+        <thead><tr><th scope="col">PROCESSO</th><th scope="col">CLIENTE(S)</th><th scope="col">ÚLTIMO REGISTRO</th><th scope="col">STATUS EXECUTIVO</th></tr></thead>
+        <tbody>
+        {% for case in cases %}
+          <tr><td><strong>{{ case.reference }}</strong>
+            <details class="case-detail"><summary>Ver detalhes</summary><p>Referência do cliente: {{ case.customers or 'Não informada' }}.</p><p>Último registro cronológico: {{ case.movement_date or 'Não informado' }}. Relevância jurídica ainda não avaliada.</p></details>
+          </td><td>{{ case.customers or 'Não informado' }}</td><td>{{ case.movement_date or 'Não informado' }}</td><td><span class="status-pending">{{ case.executive_status or 'Em revisão' }}</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}
+      <div class="empty-state">Nenhum processo elegível nesta fotografia. Isso é um zero confirmado da carteira aprovada, não ausência de dados.</div>
+      {% endif %}
+    </section>
+
+    {% if customers and customers|length <= 12 %}
+    <section class="section-block association-section" aria-labelledby="customers-title">
+      <div class="section-head"><div><p class="eyebrow">VÍNCULOS</p><h2 id="customers-title">Clientes e processos</h2></div></div>
+      <div class="association-grid">{% for customer in customers %}<div class="association-item"><strong>{{ customer.reference }}</strong><span>{{ customer.cases or 'Sem processo associado' }}</span></div>{% endfor %}</div>
+    </section>
+    {% endif %}
+
+    {% if financial_visible %}
+    <section class="section-block finance-section" aria-labelledby="finance-title">
+      <div class="section-head"><div><p class="eyebrow">FINANCEIRO</p><h2 id="finance-title">Resumo financeiro</h2></div></div>
+      <div class="finance-card"><span>REPASSE VALIDADO</span><strong>{{ financial_amount }}</strong><small>Regra aprovada e validada em {{ financial_validated_at }}.</small></div>
+    </section>
+    {% endif %}
+
+    <section class="section-block methodology" aria-labelledby="method-title">
+      <div class="section-head"><div><p class="eyebrow">METODOLOGIA</p><h2 id="method-title">Como ler esta fotografia</h2></div></div>
+      <div class="method-grid">
+        <p><strong>Fonte.</strong> {{ origin }}; vínculos governados por ID técnico. Nomes e textos livres não determinam elegibilidade.</p>
+        <p><strong>Contagem.</strong> Clientes únicos e processos distintos são medidas separadas. O último registro é cronológico, não uma conclusão jurídica.</p>
+        <p><strong>Data de corte.</strong> {{ updated_at }}. A carteira representa o estado nessa data; o intervalo exibido não reconstrói alterações históricas.</p>
+        <p><strong>Limites.</strong> Classificações jurídicas, alertas de desatualização por prazo e repasse financeiro exigem validação do negócio.</p>
+      </div>
+    </section>
+
+    <footer class="screen-footer">Prévia sintética · versão {{ version }} · gerado em {{ generated_at }}</footer>
+  </main>
+</body>
+</html>
