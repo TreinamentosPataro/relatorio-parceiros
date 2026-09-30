@@ -4,9 +4,9 @@
 
 ## Fluxo e layout
 
-`InternalReportViewModel` → projeção externa com allowlist → template Jinja2 autoescapado + CSS local → HTML responsivo → Chromium/Playwright → PDF A4 em memória. HTML e PDF usam o mesmo `ReportViewModel`. O gerador retorna bytes; o chamador futuro terá de usar storage privado e controle de acesso, sem gravar no filesystem da função Vercel.
+`InternalReportViewModel` → projeção externa com allowlist → template Jinja2 autoescapado + CSS local → HTML responsivo → Chromium/Playwright → PDF A4 em memória. HTML e PDF usam o mesmo `ReportViewModel`. O gerador retorna bytes; o chamador futuro terá de usar volume persistente privado e controle de acesso, sem gravar na camada efêmera do contêiner.
 
-O cabeçalho mostra código técnico do parceiro, período, atualização e versão. O corpo traz resumo e cartões de clientes únicos/processos distintos, alertas de qualidade, tabela de casos com referências pseudonimizadas e data do último registro cronológico, e metodologia/fonte/corte. O HTML oferece detalhes recolhíveis e associação cliente–processo para carteiras pequenas. Na impressão a associação separada é omitida porque a própria tabela contém o vínculo; detalhes recolhíveis também não entram no PDF. O status executivo permanece “Em revisão”, sem inferência jurídica. A seção financeira só aparece com valor disponível, fonte `approved_financial_rule` e data de validação. Distribuições e KPIs jurídicos continuam ausentes ou marcados como pendentes até aprovação formal de regras/categorias.
+O cabeçalho mostra código técnico do parceiro, período, atualização e versão. O corpo traz resumo e cartões de clientes únicos/processos distintos, alertas de qualidade, tabela de casos com referências pseudonimizadas e data do último registro cronológico, e metodologia/fonte/corte. O HTML oferece detalhes recolhíveis e associação cliente–processo para carteiras pequenas. Na impressão a associação separada é omitida porque a própria tabela contém o vínculo; detalhes recolhíveis também não entram no PDF. O status executivo permanece “Em revisão”, sem inferência jurídica. A seção financeira permanece bloqueada no portão PDF-5, mesmo que um valor sintético declare fonte `approved_financial_rule`: P-006/P-007 ainda não foram aprovadas. Distribuições e KPIs jurídicos continuam ausentes ou marcados como pendentes até aprovação formal de regras/categorias.
 
 O CSS usa fontes do sistema, não carrega CDN ou recurso remoto, adapta a largura de tela e possui regras A4 de impressão. A identidade preto/dourado/texto claro está registrada em `docs/DESIGN_SYSTEM.md`; em telas estreitas, processos viram cartões rotulados, enquanto no PDF os cabeçalhos de tabela se repetem e linhas não devem ser partidas entre páginas. O Chromium aborta requisições externas na geração do PDF.
 
@@ -16,6 +16,7 @@ O CSS usa fontes do sistema, não carrega CDN ou recurso remoto, adapta a largur
 - Nesta fase, origem, versão da regra e referências de cliente/processo devem corresponder aos valores controlados pelo construtor; texto livre não classificado é rejeitado. Status executivo, distribuições e KPIs jurídicos disponíveis sem aprovação também são rejeitados.
 - Padrões de CPF, CNPJ, número processual completo, segredo, token, dado de saúde e HTML/script ativo são bloqueados antes do template. Autoescape é uma segunda barreira.
 - Nenhum nome, contato, documento pessoal, observação livre ou texto de andamento é campo da visão externa. A data do último andamento não equivale a conclusão ou relevância jurídica.
+- PDF-5 revalida os objetos aninhados antes da projeção para impedir valores forjados por cópia de modelo; confere proveniência e concordância das contagens e referências, exige a fonte oficial da data cronológica e bloqueia data de andamento relevante e valor financeiro enquanto faltarem as regras. A matriz campo a campo está em `docs/MATRIZ_CONTEUDO_PDF5.md`.
 - Essas barreiras não substituem P-006/P-007, homologação de negócio, revisão de segurança e testes com políticas de acesso antes de dados reais.
 
 ## Amostras e validação
@@ -31,7 +32,7 @@ As amostras ficam em `output/html/` e `output/pdf/`: `preview_zero`, `preview_on
 
 ## Limitações e próximos portões
 
-- Não há adaptador para leitura real, aprovação de mapeamento de parceiros, revisão P-006/P-007, autenticação ou publicação.
-- O navegador foi instalado apenas na imagem local de desenvolvimento. Compatibilidade, tamanho, memória e duração de Chromium no runtime Python da Vercel ainda exigem spike; a imagem de produção não comprova esse cenário.
-- O storage privado de PDFs, retenção, versionamento persistente, URL/rota autenticada e plano Vercel profissional continuam pendentes. Nenhum PDF deve ser disponibilizado fora do ambiente de desenvolvimento antes desses portões.
+- PDF-6 acrescentou adaptador e versionamento apenas para lotes sintéticos aprovados, com download autenticado pelo portal. Não há adaptador de geração para dados reais, matriz P-006/P-007/P-023 aprovada ou publicação.
+- O navegador foi instalado apenas na imagem local de desenvolvimento. Compatibilidade, tamanho, memória e duração de Chromium na VPS ainda exigem medição; a imagem de produção não comprova esse cenário.
+- Volumes privados produtivos, backup e implementação da retenção aprovada continuam pendentes. O versionamento e a rota autenticada atuais usam somente artefatos locais sintéticos; nenhum PDF deve ser disponibilizado fora do ambiente de desenvolvimento antes desses portões. O fluxo PDF-6 está documentado em `docs/RELATORIO_PDF6.md`.
 - A aparência dos dados sintéticos não valida o conteúdo jurídico/financeiro de um relatório real.

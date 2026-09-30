@@ -199,19 +199,33 @@ class PartnerCaseLink(UuidPrimaryKeyMixin, TimestampMixin, Base):
             name="status_values",
         ),
         CheckConstraint(
-            "source IN ('manual_csv', 'admin', 'advbox_official')",
+            "source IN ('manual_csv', 'admin', 'advbox_official', 'pdf_manifest')",
             name="source_values",
+        ),
+        CheckConstraint(
+            "source <> 'pdf_manifest' OR "
+            "(advbox_entity_type = 'lawsuit' AND pdf_batch_id IS NOT NULL "
+            "AND pdf_reconciliation_item_id IS NOT NULL AND match_method IS NOT NULL "
+            "AND evidence_sha256 IS NOT NULL)",
+            name="pdf_provenance_required",
+        ),
+        CheckConstraint(
+            "source <> 'pdf_manifest' OR status <> 'active' OR "
+            "(reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="pdf_review_required_for_active",
         ),
         CheckConstraint(
             "valid_to IS NULL OR valid_to >= valid_from",
             name="valid_date_range",
         ),
-        UniqueConstraint(
+        Index(
+            "uq_partner_case_links_active_entity_start",
             "partner_id",
             "advbox_entity_type",
             "advbox_entity_id",
             "valid_from",
-            name="uq_partner_case_links_partner_entity_start",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
         ),
         Index(
             "ix_partner_case_links_entity_period",
@@ -251,6 +265,18 @@ class PartnerCaseLink(UuidPrimaryKeyMixin, TimestampMixin, Base):
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL")
     )
+    pdf_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="RESTRICT"), index=True
+    )
+    pdf_reconciliation_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_reconciliation_items.id", ondelete="RESTRICT"), unique=True
+    )
+    match_method: Mapped[str | None] = mapped_column(String(40))
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Movement(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -375,6 +401,13 @@ class ReportVersion(UuidPrimaryKeyMixin, Base):
             "version",
             name="uq_report_versions_partner_period_version",
         ),
+        Index(
+            "uq_report_versions_pdf_revision",
+            "partner_id",
+            "source_digest",
+            unique=True,
+            postgresql_where=text("pdf_batch_id IS NOT NULL"),
+        ),
         CheckConstraint("period_end >= period_start", name="period_range"),
     )
 
@@ -390,8 +423,12 @@ class ReportVersion(UuidPrimaryKeyMixin, Base):
     storage_object_key: Mapped[str | None] = mapped_column(String(500))
     content_sha256: Mapped[str | None] = mapped_column(String(64))
     source_digest: Mapped[str | None] = mapped_column(String(64))
+    pdf_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="RESTRICT"), index=True
+    )
     customer_count: Mapped[int | None] = mapped_column(Integer)
     case_count: Mapped[int | None] = mapped_column(Integer)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SyntheticPortfolio(UuidPrimaryKeyMixin, Base):
@@ -441,6 +478,9 @@ class ReportGenerationRequest(UuidPrimaryKeyMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(80))
     source_digest: Mapped[str | None] = mapped_column(String(64))
+    pdf_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="RESTRICT"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -469,6 +509,7 @@ class PdfSourceDocument(UuidPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PdfImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -478,6 +519,14 @@ class PdfImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(f"state IN ({PDF_IMPORT_STATES})", name="state_values"),
         CheckConstraint("period_end >= period_start", name="period_range"),
+        CheckConstraint(
+            "processing_status IN ('pending', 'running', 'succeeded', 'failed')",
+            name="processing_status_values",
+        ),
+        CheckConstraint("processing_attempt_count >= 0", name="processing_attempt_nonnegative"),
+        Index(
+            "ix_pdf_import_batches_processing_queue", "processing_status", "processing_available_at"
+        ),
     )
 
     source_document_id: Mapped[uuid.UUID] = mapped_column(
@@ -493,6 +542,9 @@ class PdfImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     parser_version: Mapped[str | None] = mapped_column(String(80))
     layout_version: Mapped[str | None] = mapped_column(String(80))
+    parsed_item_count: Mapped[int | None] = mapped_column(Integer)
+    parse_quality_count: Mapped[int | None] = mapped_column(Integer)
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(String(30), nullable=False)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), index=True
@@ -501,6 +553,21 @@ class PdfImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     superseded_by_batch_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("pdf_import_batches.id", ondelete="RESTRICT")
     )
+    review_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    processing_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    processing_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    processing_available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    processing_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_error_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class PdfImportEvent(UuidPrimaryKeyMixin, Base):
@@ -529,12 +596,128 @@ class PdfImportEvent(UuidPrimaryKeyMixin, Base):
     )
 
 
+class PdfManifestItem(UuidPrimaryKeyMixin, Base):
+    """Minimal parser output; free text and source filename are excluded."""
+
+    __tablename__ = "pdf_manifest_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "source_ordinal", name="uq_pdf_manifest_items_batch_ordinal"),
+        CheckConstraint("source_ordinal > 0", name="source_ordinal_positive"),
+        CheckConstraint("source_page_start > 0", name="page_start_positive"),
+        CheckConstraint("source_page_end >= source_page_start", name="page_range"),
+    )
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    process_number_normalized: Mapped[str | None] = mapped_column(String(20))
+    folder_exact: Mapped[str | None] = mapped_column(String(80))
+    source_page_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_flags: Mapped[list[str]] = mapped_column(ARRAY(String(40)), nullable=False)
+
+
+MATCH_STATUS_VALUES = (
+    "'matched', 'unmatched', 'ambiguous', 'duplicate_source', 'invalid_identifier'"
+)
+
+
+class PdfReconciliationRun(UuidPrimaryKeyMixin, Base):
+    """A verified API photograph and count-only result for one PDF batch."""
+
+    __tablename__ = "pdf_reconciliation_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "snapshot_sha256",
+            "parser_version",
+            name="uq_pdf_reconciliation_runs_batch_snapshot_parser",
+        ),
+        CheckConstraint("snapshot_total >= 0", name="snapshot_total_nonnegative"),
+        CheckConstraint("result_total >= 0", name="result_total_nonnegative"),
+    )
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    parser_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    result_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    unmatched_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    ambiguous_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    duplicate_source_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    invalid_identifier_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PdfReconciliationItem(UuidPrimaryKeyMixin, Base):
+    """One exclusive classification; matched rows are proposals, not active links."""
+
+    __tablename__ = "pdf_reconciliation_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "manifest_item_id", name="uq_pdf_reconciliation_items_run_manifest"
+        ),
+        CheckConstraint(f"status IN ({MATCH_STATUS_VALUES})", name="status_values"),
+        CheckConstraint(
+            "method IS NULL OR method IN ('process_number_exact', 'folder_exact_unique')",
+            name="method_values",
+        ),
+        CheckConstraint(
+            "(status = 'matched' AND method IS NOT NULL AND matched_advbox_id IS NOT NULL "
+            "AND evidence_sha256 IS NOT NULL AND proposed_valid_from IS NOT NULL "
+            "AND proposed_valid_to IS NOT NULL) OR "
+            "(status <> 'matched' AND method IS NULL AND matched_advbox_id IS NULL "
+            "AND matched_lawsuit_id IS NULL AND evidence_sha256 IS NULL "
+            "AND proposed_valid_from IS NULL AND proposed_valid_to IS NULL)",
+            name="matched_proposal_only",
+        ),
+        ForeignKeyConstraint(
+            ["matched_lawsuit_id", "matched_advbox_id"],
+            ["lawsuits.id", "lawsuits.advbox_id"],
+            ondelete="RESTRICT",
+            name="fk_pdf_reconciliation_items_lawsuit_external",
+        ),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("pdf_reconciliation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    manifest_item_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("pdf_manifest_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    method: Mapped[str | None] = mapped_column(String(40))
+    reason_code: Mapped[str | None] = mapped_column(String(80))
+    matched_advbox_id: Mapped[int | None] = mapped_column(BigInteger)
+    matched_lawsuit_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    proposed_valid_from: Mapped[date | None] = mapped_column(Date)
+    proposed_valid_to: Mapped[date | None] = mapped_column(Date)
+
+
 class PdfImportReview(UuidPrimaryKeyMixin, Base):
-    """Reserved audit record for a future authorized human review decision."""
+    """Allowlisted human decision and technical before/after evidence."""
 
     __tablename__ = "pdf_import_reviews"
     __table_args__ = (
-        CheckConstraint("decision IN ('approved', 'rejected', 'returned')", name="decision_values"),
+        CheckConstraint(
+            "decision IN ('approved', 'rejected', 'returned', 'corrected', "
+            "'reprocess_requested', 'superseded')",
+            name="decision_values",
+        ),
     )
 
     batch_id: Mapped[uuid.UUID] = mapped_column(
@@ -545,6 +728,21 @@ class PdfImportReview(UuidPrimaryKeyMixin, Base):
     )
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    reconciliation_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_reconciliation_items.id", ondelete="RESTRICT")
+    )
+    reconciliation_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_reconciliation_runs.id", ondelete="RESTRICT")
+    )
+    replacement_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("pdf_import_batches.id", ondelete="RESTRICT")
+    )
+    method: Mapped[str | None] = mapped_column(String(40))
+    before_advbox_id: Mapped[int | None] = mapped_column(BigInteger)
+    after_advbox_id: Mapped[int | None] = mapped_column(BigInteger)
+    review_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -28,9 +28,9 @@
 - Cliente e processo são entidades distintas.
 - Ausência, zero, não aplicável, pendente e restrito são estados diferentes.
 - Motor de regras, visão interna, visão externa e renderização permanecem desacoplados.
-- O alvo de produção é o runtime Python/FastAPI da Vercel. Docker Compose é apenas para desenvolvimento local.
-- Não persista banco, PDFs, sessões, jobs ou checkpoints no filesystem da função Vercel.
-- Não publique produção no plano Hobby/Free.
+- O alvo de produção é uma única VPS Linux com Docker Compose, conforme `docs/ADR/ADR-003-implantacao-vps.md`.
+- Banco, PDFs, sessões, jobs e checkpoints usam volumes persistentes privados; nenhum deles pode ficar em camada efêmera do contêiner ou ser publicado diretamente pelo proxy.
+- Backups do PostgreSQL e dos objetos devem ser criptografados, mantidos fora da VPS e ter restauração testada antes do uso real.
 
 ## Qualidade e conclusão
 

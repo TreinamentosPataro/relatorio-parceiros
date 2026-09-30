@@ -18,7 +18,7 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(
         title="Plataforma de Relatórios de Parceiros",
         version=__version__,
-        docs_url=None if settings.is_production else "/docs",
+        docs_url=None if settings.is_deployed else "/docs",
         redoc_url=None,
     )
     app.state.settings = settings

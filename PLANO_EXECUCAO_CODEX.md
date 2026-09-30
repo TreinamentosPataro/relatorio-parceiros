@@ -1,6 +1,6 @@
 # Plano de execução no Codex — Plataforma de Relatórios de Parceiros
 
-> **Adendo de 23/09/2026:** este documento preserva o histórico do plano original. As etapas 0 a 10 continuam válidas; o caminho da etapa 11 que dependia do cadastro interno de parceiros foi substituído por `PLANO_EXECUCAO_IMPORTACAO_PDF.md`, pois a Advbox não autorizará aquelas rotas. Não implemente o adaptador interno descrito neste histórico.
+> **Adendo de 25/09/2026:** este documento preserva o histórico do plano original. As etapas 0 a 10 continuam válidas; o caminho da etapa 11 foi substituído por `PLANO_EXECUCAO_IMPORTACAO_PDF.md`. A decisão posterior de hospedagem está em `docs/ADR/ADR-003-implantacao-vps.md`: uma única VPS Linux com Docker Compose substitui a Vercel como alvo de produção. Não implemente o adaptador interno nem retome a arquitetura Vercel descritos neste histórico.
 
 **Data:** 11/09/2026  
 **Documentos de referência:** `ANALISE_TECNICA_AUTOMACAO_RELATORIO_PARCEIROS.md` e `ANALISE_VARIABILIDADE_MULTIPARCEIRO.md`  

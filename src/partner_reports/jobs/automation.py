@@ -16,9 +16,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from partner_reports.config import AppEnvironment
+from partner_reports.config import AppEnvironment, PdfDataScope, Settings
 from partner_reports.persistence.models import (
     Partner,
+    PdfImportBatch,
     ReportGenerationRequest,
     ReportVersion,
     SyncChangedPartner,
@@ -27,7 +28,7 @@ from partner_reports.persistence.models import (
 )
 from partner_reports.reports.preview_cli import synthetic_preview
 from partner_reports.reports.render import generate_pdf, render_html, to_partner_report
-from partner_reports.web.artifacts import SyntheticArtifactStore
+from partner_reports.web.artifacts import build_artifact_store
 
 _LEASE = timedelta(seconds=90)
 _TIMEOUT = 240
@@ -36,9 +37,9 @@ _CYCLE_LOCK = 90717009
 _ZONE = ZoneInfo("America/Sao_Paulo")
 
 
-def _require_local(app_env: AppEnvironment) -> None:
-    if app_env not in (AppEnvironment.DEVELOPMENT, AppEnvironment.TEST):
-        raise RuntimeError("Automação sintética indisponível em produção")
+def _require_synthetic_runtime(app_env: AppEnvironment) -> None:
+    if not isinstance(app_env, AppEnvironment):
+        raise RuntimeError("Ambiente de automação inválido")
 
 
 def _digest(source: SyntheticPortfolio) -> str:
@@ -50,7 +51,7 @@ def enqueue_cycle(
 ) -> dict[str, int | str]:
     """One DB-serialized, idempotent scan; queue only changed synthetic partners."""
 
-    _require_local(app_env)
+    _require_synthetic_runtime(app_env)
     if (
         not key
         or len(key) > 100
@@ -94,6 +95,16 @@ def enqueue_cycle(
                 or not partner.external_id.startswith("SYNTHETIC-")
                 or partner.status != "active"
                 or partner.deleted_at is not None
+            ):
+                continue
+            if (
+                db.scalar(
+                    select(PdfImportBatch.id).where(
+                        PdfImportBatch.partner_id == partner.id,
+                        PdfImportBatch.state == "approved",
+                    )
+                )
+                is not None
             ):
                 continue
             run.fetched_count += 1
@@ -141,10 +152,18 @@ def scheduled_key(now: datetime | None = None) -> str:
     return f"daily-{(now or datetime.now(UTC)).astimezone(_ZONE):%Y-%m-%d}"
 
 
-def _recover(db: Session, now: datetime) -> None:
+def _report_scope_clause(settings: Settings | None):
+    if settings is None or settings.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
+        return Partner.external_id.startswith("SYNTHETIC-")
+    return Partner.external_id.in_(settings.pilot_partner_ids)
+
+
+def _recover(db: Session, now: datetime, settings: Settings | None = None) -> None:
     abandoned = db.scalars(
         select(ReportGenerationRequest)
+        .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
         .where(
+            _report_scope_clause(settings),
             ReportGenerationRequest.status == "running",
             ReportGenerationRequest.lease_expires_at < now,
         )
@@ -163,12 +182,14 @@ def _recover(db: Session, now: datetime) -> None:
 
 
 def claim(
-    sessions: sessionmaker[Session], app_env: AppEnvironment
+    sessions: sessionmaker[Session],
+    app_env: AppEnvironment,
+    settings: Settings | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID] | None:
-    _require_local(app_env)
+    _require_synthetic_runtime(app_env)
     with sessions() as db, db.begin():
         now = datetime.now(UTC)
-        _recover(db, now)
+        _recover(db, now, settings)
         request = db.scalar(
             select(ReportGenerationRequest)
             .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
@@ -176,7 +197,7 @@ def claim(
                 ReportGenerationRequest.status == "pending",
                 (ReportGenerationRequest.available_at.is_(None))
                 | (ReportGenerationRequest.available_at <= now),
-                Partner.external_id.startswith("SYNTHETIC-"),
+                _report_scope_clause(settings),
             )
             .order_by(ReportGenerationRequest.created_at, ReportGenerationRequest.id)
             .with_for_update(skip_locked=True)
@@ -244,19 +265,38 @@ async def process_one(
     output_root: Path,
     *,
     pdf_renderer: Callable | None = None,
+    settings: Settings | None = None,
 ) -> str:
     """Render outside transaction, then expose a complete pair with one DB commit."""
 
-    _require_local(app_env)
-    claimed = claim(sessions, app_env)
+    _require_synthetic_runtime(app_env)
+    claimed = claim(sessions, app_env, settings)
     if claimed is None:
         return "empty"
     request_id, token = claimed
-    store = SyntheticArtifactStore(output_root, app_env)
+    store = build_artifact_store(
+        output_root,
+        app_env,
+        settings.pdf_data_scope if settings is not None else PdfDataScope.SYNTHETIC_ONLY,
+    )
     key: str | None = None
     failure_code = "JOB_FAILED"
     pulse = asyncio.create_task(_heartbeat_loop(sessions, request_id, token))
     try:
+        with sessions() as db:
+            pdf_batch_id = db.get(ReportGenerationRequest, request_id).pdf_batch_id
+        if pdf_batch_id is not None:
+            from partner_reports.jobs.pdf_batch_reports import process_claimed_pdf_batch
+
+            return await process_claimed_pdf_batch(
+                sessions,
+                app_env,
+                output_root,
+                request_id,
+                token,
+                pdf_renderer=pdf_renderer,
+                settings=settings,
+            )
         with sessions() as db:
             request = db.get(ReportGenerationRequest, request_id)
             source = db.scalar(
@@ -269,6 +309,13 @@ async def process_one(
                 source is None
                 or partner is None
                 or not partner.external_id.startswith("SYNTHETIC-")
+                or db.scalar(
+                    select(PdfImportBatch.id).where(
+                        PdfImportBatch.partner_id == request.partner_id,
+                        PdfImportBatch.state == "approved",
+                    )
+                )
+                is not None
             ):
                 failure_code = "SOURCE_UNAVAILABLE"
                 raise RuntimeError
@@ -364,15 +411,19 @@ async def process_one(
             await pulse
 
 
-def retry_failed(sessions: sessionmaker[Session], app_env: AppEnvironment) -> int:
-    _require_local(app_env)
+def retry_failed(
+    sessions: sessionmaker[Session],
+    app_env: AppEnvironment,
+    settings: Settings | None = None,
+) -> int:
+    _require_synthetic_runtime(app_env)
     with sessions() as db, db.begin():
         rows = db.scalars(
             select(ReportGenerationRequest)
             .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
             .where(
                 ReportGenerationRequest.status == "failed",
-                Partner.external_id.startswith("SYNTHETIC-"),
+                _report_scope_clause(settings),
             )
             .with_for_update(skip_locked=True)
         ).all()
@@ -399,13 +450,17 @@ def retry_failed(sessions: sessionmaker[Session], app_env: AppEnvironment) -> in
         return retried
 
 
-def status(sessions: sessionmaker[Session], app_env: AppEnvironment) -> dict[str, int]:
-    _require_local(app_env)
+def status(
+    sessions: sessionmaker[Session],
+    app_env: AppEnvironment,
+    settings: Settings | None = None,
+) -> dict[str, int]:
+    _require_synthetic_runtime(app_env)
     with sessions() as db:
         counts = db.execute(
             select(ReportGenerationRequest.status, func.count())
             .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
-            .where(Partner.external_id.startswith("SYNTHETIC-"))
+            .where(_report_scope_clause(settings))
             .group_by(ReportGenerationRequest.status)
         ).all()
         return {name: count for name, count in counts}
@@ -414,7 +469,7 @@ def status(sessions: sessionmaker[Session], app_env: AppEnvironment) -> dict[str
 def bump_revision(
     sessions: sessionmaker[Session], app_env: AppEnvironment, partner_code: str
 ) -> int:
-    _require_local(app_env)
+    _require_synthetic_runtime(app_env)
     if not partner_code.startswith("SYNTHETIC-"):
         raise ValueError("Apenas parceiro sintético")
     with sessions() as db, db.begin():

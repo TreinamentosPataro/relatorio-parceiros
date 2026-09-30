@@ -116,7 +116,7 @@ def test_free_text_cannot_replace_controlled_reference() -> None:
         render_html(tampered)
 
 
-def test_financial_card_requires_validated_approved_source() -> None:
+def test_financial_card_remains_blocked_without_business_and_access_approval() -> None:
     internal = synthetic_preview("one")
     preview = internal.partner_preview
     assert preview is not None
@@ -127,7 +127,8 @@ def test_financial_card_requires_validated_approved_source() -> None:
     tampered = internal.model_copy(
         update={"partner_preview": preview.model_copy(update={"financial": unapproved})}
     )
-    assert "R$ 0,00" not in render_html(tampered)
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
     approved = ReportValue[FinancialSummary](
         status="available",
         value=amount,
@@ -138,9 +139,73 @@ def test_financial_card_requires_validated_approved_source() -> None:
     tampered = internal.model_copy(
         update={"partner_preview": preview.model_copy(update={"financial": approved})}
     )
-    approved_html = render_html(tampered)
-    assert "Resumo financeiro" in approved_html
-    assert "R$ 0,00" in approved_html
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
+
+
+def test_relevant_movement_cannot_be_exposed_by_claiming_availability() -> None:
+    internal = synthetic_preview("one")
+    preview = internal.partner_preview
+    assert preview is not None
+    case = preview.cases.value[0]
+    claimed = ReportValue[datetime](
+        status="available", value=AS_OF, source="legal_review", as_of=AS_OF
+    )
+    altered_case = case.model_copy(update={"latest_relevant_movement_at": claimed})
+    altered_cases = preview.cases.model_copy(update={"value": (altered_case,)})
+    tampered = internal.model_copy(
+        update={"partner_preview": preview.model_copy(update={"cases": altered_cases})}
+    )
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
+
+
+def test_chronological_movement_requires_official_source() -> None:
+    internal = synthetic_preview("one")
+    preview = internal.partner_preview
+    assert preview is not None
+    case = preview.cases.value[0]
+    copied_from_pdf = case.latest_recorded_movement_at.model_copy(update={"source": "pdf"})
+    altered_case = case.model_copy(update={"latest_recorded_movement_at": copied_from_pdf})
+    altered_cases = preview.cases.model_copy(update={"value": (altered_case,)})
+    tampered = internal.model_copy(
+        update={"partner_preview": preview.model_copy(update={"cases": altered_cases})}
+    )
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
+
+
+def test_count_cannot_be_copied_from_pdf_or_disagree_with_case_list() -> None:
+    internal = synthetic_preview("one")
+    preview = internal.partner_preview
+    assert preview is not None
+    copied_from_pdf = preview.metrics.lawsuits.model_copy(update={"source": "pdf"})
+    altered_metrics = preview.metrics.model_copy(update={"lawsuits": copied_from_pdf})
+    tampered = internal.model_copy(
+        update={"partner_preview": preview.model_copy(update={"metrics": altered_metrics})}
+    )
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
+    conflicting = preview.metrics.lawsuits.model_copy(update={"value": 0})
+    altered_metrics = preview.metrics.model_copy(update={"lawsuits": conflicting})
+    tampered = internal.model_copy(
+        update={"partner_preview": preview.model_copy(update={"metrics": altered_metrics})}
+    )
+    with pytest.raises(UnsafeReportData):
+        render_html(tampered)
+
+
+def test_nested_model_copy_cannot_add_value_to_pending_field() -> None:
+    internal = synthetic_preview("one")
+    preview = internal.partner_preview
+    assert preview is not None
+    forged = preview.metrics.benefits_granted.model_copy(update={"value": 0})
+    altered_metrics = preview.metrics.model_copy(update={"benefits_granted": forged})
+    tampered = internal.model_copy(
+        update={"partner_preview": preview.model_copy(update={"metrics": altered_metrics})}
+    )
+    with pytest.raises(ValueError):
+        render_html(tampered)
 
 
 def test_no_preview_cannot_be_projected() -> None:

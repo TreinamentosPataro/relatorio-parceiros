@@ -2,7 +2,7 @@
 
 **Versão:** 1.0  
 **Data:** 15/09/2026  
-**Banco-alvo:** PostgreSQL 17 ou compatível, externo à Vercel em produção
+**Banco-alvo:** PostgreSQL 17 ou compatível, em volume persistente privado da VPS no MVP
 
 ## Princípios
 
@@ -58,6 +58,14 @@ erDiagram
 | `partner_financial_agreements` | parceiro, processo, tipo de receita, percentual, dedução fixa/percentual, arredondamento, vigência, status e auditoria | Percentuais entre 0 e 100, dedução fixa não negativa, escala 0–4 e combinação inicial única |
 | `report_versions` | parceiro, período, versão, status, datas, chave do objeto e SHA-256 | Versão única por parceiro/período; período válido; arquivo não reside no banco |
 | `section_statuses` | versão, seção, `availability_status`, motivo e instante de avaliação | Uma linha por seção/versão; ausência nunca é convertida em zero |
+| `pdf_manifest_items` | lote, ordinal, número processual canônico opcional, pasta exata opcional, páginas e flags catalogadas | UUID técnico determinístico por hash/versão/ordinal; sem texto livre; ordinal único no lote; revisão obrigatória para item incompleto/duplicado |
+| `pdf_import_batches` | parceiro, período, hash via documento-fonte, estado, versão de parser/layout, contagens e fila de processamento com tentativas/lease/heartbeat/erro catalogado | Um documento-fonte por lote; transições auditadas; claim concorrente com `SKIP LOCKED`; nenhuma conclusão de publicação por `parsed` ou `processing_status=succeeded` |
+| `pdf_reconciliation_runs` | lote, parser, SHA-256 da fotografia API verificada duas vezes, total, horário e contagens por resultado | Unicidade lote+fotografia+parser impede repetição; somente metadados técnicos, sem resposta bruta |
+| `pdf_reconciliation_items` | execução, item do manifesto, resultado exclusivo, método, ID Advbox/local opcional, evidência SHA-256 e vigência proposta | Somente `matched` pode ter candidato; linha é proposta, não vínculo ativo; FK composta confere ID local com ID Advbox |
+
+`partner_case_links` recebeu campos opcionais de proveniência do PDF (`pdf_batch_id`, `pdf_reconciliation_item_id`, `match_method`, `evidence_sha256`, `reviewed_by`, `reviewed_at`). Fonte `pdf_manifest` exige proveniência técnica e, quando ativa, revisor e instante; PDF-3 não cria esses vínculos. A decisão humana e a validação cruzada do resultado pertencem à PDF-4.
+
+PDF-6 acrescentou `pdf_batch_id` opcional em `report_generation_requests` e `report_versions`. `source_digest` da versão de lote é a revisão derivada de parceiro, período, SHA-256 do PDF-fonte, parser, fotografia da API e regras. Índice único parcial `(partner_id, source_digest)` para versões com lote impede duplicidade de revisão. As versões anteriores e solicitações sintéticas sem lote conservam `pdf_batch_id = NULL`; o PDF original continua em storage separado e nunca no relatório.
 
 O contrato lógico do ADR-001 contém `partner_external_id` e `partner_name`. No modelo normalizado, ambos são obtidos por `partner_case_links.partner_id → partners`; não são duplicados na tabela de vínculo.
 
@@ -96,12 +104,12 @@ O contrato lógico do ADR-001 contém `partner_external_id` e `partner_name`. No
 | Classe | Política |
 |---|---|
 | R0 — payload bruto | Não armazenar; descartar após normalização em memória |
-| R1 — carteira operacional | Manter enquanto houver finalidade ativa; após remoção, usar soft-delete e aguardar prazo jurídico aprovado antes da eliminação física |
-| R2 — vínculo e financeiro | Preservar vigência e auditoria; eliminação somente após encerramento e prazo formal aprovado |
+| R1 — carteira operacional | Manter durante a finalidade ativa e por 12 meses após substituição ou encerramento; usar soft-delete antes da eliminação física |
+| R2 — vínculo e financeiro | Vínculos seguem 12 meses após substituição ou encerramento; financeiro não é persistido no MVP e exige prazo específico se ativado |
 | R3 — execução e erros | Reter metadados operacionais por 90 dias como padrão técnico, sujeito à aprovação de segurança/operação |
-| R4 — versões e auditoria | Preservar metadados enquanto a versão/obrigação associada existir; prazo final depende de aprovação jurídica |
+| R4 — versões e auditoria | Versões internas por 12 meses; auditoria de segurança e decisões por 24 meses |
 
-Os prazos jurídicos de R1, R2 e R4 continuam pendentes. Até a aprovação, não haverá rotina automática de exclusão física. Isso evita definir prazo legal sem responsável, mas não autoriza retenção indefinida em produção.
+Os prazos de R1, R2 e R4 foram aprovados no ADR-004 após o dry-run PDF-7. A rotina automática de expiração e a restauração coerente de backups serão implementadas e testadas no PDF-8 antes da produção.
 
 ## Contratos Pydantic
 
@@ -113,11 +121,11 @@ Os prazos jurídicos de R1, R2 e R4 continuam pendentes. Até a aprovação, nã
 
 ## Migrations e operação
 
-- Revision inicial: `20260915_0001`; `20260916_0002` acrescenta reconciliação da sincronização, `20260916_0003` identidade/portal, `20260917_0004` automação sintética e `20260923_0005` metadados privados da ingestão PDF.
+- Revision inicial: `20260915_0001`; `20260916_0002` acrescenta reconciliação da sincronização, `20260916_0003` identidade/portal, `20260917_0004` automação sintética, `20260923_0005` metadados privados da ingestão PDF e `20260930_0013` a fila durável de parse/reconciliação.
 - `pdf_source_documents` guarda somente hash, chave opaca, MIME, tamanho, páginas e criação. `pdf_import_batches` liga a fonte ao parceiro/período e ao estado; `pdf_import_events` preserva transições; `pdf_import_reviews` reserva decisões humanas catalogadas. Nome original e texto do PDF não são persistidos na PDF-1.
 - `btree_gist` sustenta a constraint de não sobreposição de vínculos ativos.
 - Upgrade e downgrade são transacionais; a extensão é mantida no downgrade para não remover dependência possivelmente compartilhada.
-- O provedor PostgreSQL de produção deverá suportar `btree_gist`, SSL, pool compatível com serverless, backup e restauração testada.
+- O PostgreSQL de produção deverá suportar `btree_gist`, usuário de menor privilégio, rede privada do Compose, backup criptografado externo e restauração testada.
 
 Comandos locais:
 
@@ -130,8 +138,8 @@ docker compose run --rm app pytest
 
 ## Pendências para fases posteriores
 
-- Aprovar os prazos jurídicos de retenção R1, R2 e R4.
-- Selecionar o PostgreSQL externo e validar suporte a `btree_gist`.
+- Implementar e testar os prazos aprovados de R1, R2 e R4, incluindo backups.
+- Validar PostgreSQL e `btree_gist` na VPS, persistência após recriação dos contêineres e restauração do backup fora do host.
 - Implementar o parser e a reconciliação do manifesto PDF nas etapas PDF-2/PDF-3; o CSV deixou de ser a fonte escolhida pelo ADR-002.
 - Definir e carregar os vínculos iniciais antes de atribuição a parceiros e publicação; a sincronização sem vínculos mantém os itens não atribuídos, sem inferir parceiro.
 - Formalizar regras financeiras antes de ativar cálculos de repasse.

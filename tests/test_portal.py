@@ -31,7 +31,11 @@ from partner_reports.persistence.models import (
     Role,
     UserRole,
 )
-from partner_reports.web.artifacts import ArtifactUnavailable, SyntheticArtifactStore
+from partner_reports.web.artifacts import (
+    ArtifactUnavailable,
+    SyntheticArtifactStore,
+    build_artifact_store,
+)
 from partner_reports.web.security import COOKIE_NAME, hash_password
 from partner_reports.web.user_cli import main as user_cli_main
 
@@ -151,6 +155,37 @@ def test_login_catalog_search_and_detail(portal) -> None:
     assert "Regenerar apenas este parceiro" not in detail.text
 
 
+def test_private_pilot_scope_uses_exact_allowlist(portal, db_session: Session) -> None:
+    client, synthetic_partner, _, _ = portal
+    allowed = Partner(external_id="PILOT-001", name="Parceiro piloto permitido")
+    blocked = Partner(external_id="PILOT-002", name="Parceiro piloto bloqueado")
+    db_session.add_all([allowed, blocked])
+    db_session.flush()
+    client.app.state.settings = Settings(
+        app_env="test",
+        database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
+        pdf_data_scope="private_pilot",
+        pdf_pilot_partner_ids="PILOT-001",
+        _env_file=None,
+    )
+
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    catalog = client.get("/portal/partners")
+    assert catalog.status_code == 200
+    assert allowed.name in catalog.text
+    assert blocked.name not in catalog.text
+    assert synthetic_partner.name not in catalog.text
+    assert client.get(f"/portal/partners/{allowed.id}").status_code == 200
+    assert client.get(f"/portal/partners/{blocked.id}").status_code == 404
+    assert client.get(f"/portal/partners/{synthetic_partner.id}").status_code == 404
+
+    upload = client.get("/portal/imports/new")
+    assert upload.status_code == 200
+    assert allowed.name in upload.text
+    assert blocked.name not in upload.text
+    assert synthetic_partner.name not in upload.text
+
+
 def test_artifact_is_scoped_to_partner_and_local_synthetic(portal) -> None:
     client, partner_a, partner_b, version = portal
     _login(client)
@@ -175,6 +210,304 @@ def test_artifact_is_scoped_to_partner_and_local_synthetic(portal) -> None:
         SyntheticArtifactStore(Path("output"), AppEnvironment.PRODUCTION).read(
             "synthetic/one", "pdf"
         )
+
+
+def test_pdf_batch_report_requires_admin_and_checks_artifact_integrity(
+    portal, db_session: Session
+) -> None:
+    import hashlib
+
+    client, partner, _, version = portal
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=1000,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 16),
+        parser_version="advbox-manifest-1",
+        parsed_item_count=1,
+        state="approved",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    version.pdf_batch_id = batch.id
+    store = client.app.state.artifact_store
+    version.content_sha256 = hashlib.sha256(
+        store.read("synthetic/one", "html") + store.read("synthetic/one", "pdf")
+    ).hexdigest()
+    db_session.flush()
+    assert _login(client).status_code == 303
+    detail = client.get(f"/portal/partners/{partner.id}")
+    assert "Fonte: lote PDF aprovado" in detail.text
+    assert source.storage_object_key not in detail.text
+    assert (
+        client.post(
+            f"/portal/imports/{batch.id}/generate",
+            data={"csrf": _csrf(detail.text), "confirm": "yes"},
+        ).status_code
+        == 403
+    )
+    assert client.get(f"/portal/partners/{partner.id}/versions/{version.id}/pdf").status_code == 200
+    version.content_sha256 = "0" * 64
+    db_session.flush()
+    assert client.get(f"/portal/partners/{partner.id}/versions/{version.id}/pdf").status_code == 404
+    client.post("/portal/logout", data={"csrf": _csrf(detail.text)})
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    batch_detail = client.get(f"/portal/imports/{batch.id}")
+    assert "Solicitar relatório" in batch_detail.text
+    assert (
+        client.post(
+            f"/portal/imports/{batch.id}/generate",
+            data={"csrf": "bad", "confirm": "yes"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/portal/imports/{batch.id}/generate",
+            data={"csrf": _csrf(batch_detail.text), "confirm": "yes"},
+        ).status_code
+        == 409
+    )
+
+
+def test_admin_can_restore_prior_validated_version(portal, db_session: Session) -> None:
+    client, partner, _, first = portal
+    second = ReportVersion(
+        partner_id=partner.id,
+        period_start=first.period_start,
+        period_end=first.period_end,
+        version=2,
+        status="validated",
+        generated_at=datetime(2026, 9, 16, 13, tzinfo=UTC),
+        storage_object_key="synthetic/one",
+    )
+    db_session.add(second)
+    db_session.flush()
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    detail = client.get(f"/portal/partners/{partner.id}")
+    assert "Restaurar v1" in detail.text
+    url = f"/portal/partners/{partner.id}/versions/{first.id}/restore"
+    assert client.post(url, data={"csrf": "bad", "confirm": "yes"}).status_code == 403
+    assert client.post(url, data={"csrf": _csrf(detail.text)}).status_code == 400
+    restored = client.post(
+        url, data={"csrf": _csrf(detail.text), "confirm": "yes"}, follow_redirects=False
+    )
+    assert restored.status_code == 303
+    db_session.refresh(second)
+    assert second.status == "superseded"
+    detail = client.get(f"/portal/partners/{partner.id}")
+    assert "Restaurar v2" in detail.text
+    assert f"versions/{first.id}/html" in detail.text
+    assert client.get(f"/portal/partners/{partner.id}/versions/{second.id}/pdf").status_code == 404
+    assert (
+        client.post(
+            f"/portal/partners/{partner.id}/versions/{second.id}/restore",
+            data={"csrf": _csrf(detail.text), "confirm": "yes"},
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert client.get(f"/portal/partners/{partner.id}/versions/{second.id}/pdf").status_code == 200
+
+
+def test_admin_can_restore_integral_private_pilot_version(
+    portal, db_session: Session, tmp_path: Path
+) -> None:
+    client, _, _, _ = portal
+    partner = Partner(external_id="PILOT-RESTORE-001", name="Parceiro piloto de teste")
+    source = PdfSourceDocument(
+        source_sha256="a" * 64,
+        storage_object_key="private/source/opaque-test.pdf",
+        byte_size=1000,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add_all([partner, source])
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        parser_version="private-pilot-test-1",
+        parsed_item_count=1,
+        state="approved",
+    )
+    db_session.add(batch)
+    db_session.flush()
+
+    settings = Settings(
+        app_env="test",
+        database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
+        pdf_data_scope="private_pilot",
+        pdf_pilot_partner_ids=partner.external_id,
+        _env_file=None,
+    )
+    client.app.state.settings = settings
+    store = build_artifact_store(
+        tmp_path / "private-reports", settings.app_env, settings.pdf_data_scope
+    )
+    client.app.state.artifact_store = store
+    first_key, first_digest = store.write_generated(
+        b"<!doctype html><title>Private pilot v1</title>", b"%PDF-1.4\nprivate-pilot-v1"
+    )
+    second_key, second_digest = store.write_generated(
+        b"<!doctype html><title>Private pilot v2</title>", b"%PDF-1.4\nprivate-pilot-v2"
+    )
+    first = ReportVersion(
+        partner_id=partner.id,
+        pdf_batch_id=batch.id,
+        period_start=batch.period_start,
+        period_end=batch.period_end,
+        version=1,
+        status="validated",
+        generated_at=datetime(2026, 9, 30, 12, tzinfo=UTC),
+        storage_object_key=first_key,
+        content_sha256=first_digest,
+    )
+    second = ReportVersion(
+        partner_id=partner.id,
+        pdf_batch_id=batch.id,
+        period_start=batch.period_start,
+        period_end=batch.period_end,
+        version=2,
+        status="validated",
+        generated_at=datetime(2026, 9, 30, 13, tzinfo=UTC),
+        storage_object_key=second_key,
+        content_sha256=second_digest,
+    )
+    db_session.add_all([first, second])
+    db_session.flush()
+
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    detail = client.get(f"/portal/partners/{partner.id}")
+    restored = client.post(
+        f"/portal/partners/{partner.id}/versions/{first.id}/restore",
+        data={"csrf": _csrf(detail.text), "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert restored.status_code == 303
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert first.status == "validated"
+    assert second.status == "superseded"
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.action == "report_version_restored",
+                AuditEvent.entity_id == first.id,
+            )
+        )
+        == 1
+    )
+
+    second.content_sha256 = "0" * 64
+    db_session.flush()
+    detail = client.get(f"/portal/partners/{partner.id}")
+    rejected = client.post(
+        f"/portal/partners/{partner.id}/versions/{second.id}/restore",
+        data={"csrf": _csrf(detail.text), "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert rejected.status_code == 404
+    db_session.refresh(second)
+    assert second.status == "superseded"
+
+
+@pytest.mark.browser
+def test_pdf6_portal_layout_with_long_synthetic_name(portal, db_session: Session) -> None:
+    from playwright.async_api import async_playwright
+
+    client, partner, _, first = portal
+    partner.name = "Parceiro sintético " + "NomeComprido" * 12
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=1000,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=first.period_start,
+        period_end=first.period_end,
+        parser_version="advbox-manifest-1",
+        parsed_item_count=1,
+        state="approved",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    first.pdf_batch_id = batch.id
+    db_session.add(
+        ReportVersion(
+            partner_id=partner.id,
+            period_start=first.period_start,
+            period_end=first.period_end,
+            version=2,
+            status="validated",
+            generated_at=datetime(2026, 9, 16, 13, tzinfo=UTC),
+            storage_object_key="synthetic/one",
+            pdf_batch_id=batch.id,
+        )
+    )
+    db_session.flush()
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    pages = {
+        "partner": client.get(f"/portal/partners/{partner.id}").text,
+        "batch": client.get(f"/portal/imports/{batch.id}").text,
+    }
+    assert "Restaurar v1" in pages["partner"]
+    assert "Solicitar relatório" in pages["batch"]
+    assert source.storage_object_key not in " ".join(pages.values())
+    css = client.get("/portal/assets.css").text
+
+    async def check() -> None:
+        output = Path("output/preview")
+        output.mkdir(parents=True, exist_ok=True)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                for name, source_html in pages.items():
+                    html = source_html.replace(
+                        '<link rel="stylesheet" href="/portal/assets.css">',
+                        f"<style>{css}</style>",
+                    )
+                    for width, size in ((1280, "desktop"), (375, "mobile")):
+                        page = await browser.new_page(viewport={"width": width, "height": 950})
+                        await page.set_content(html)
+                        overflow = await page.evaluate(
+                            """() => ({
+                                width: document.documentElement.scrollWidth,
+                                viewport: innerWidth,
+                                offenders: [...document.querySelectorAll('*')]
+                                  .filter(el => el.getBoundingClientRect().right > innerWidth + 1)
+                                  .slice(0, 5)
+                                  .map(el => [el.tagName, el.className])
+                            })"""
+                        )
+                        assert overflow["width"] <= overflow["viewport"], (name, size, overflow)
+                        await page.screenshot(
+                            path=str(output / f"pdf6_{name}_{size}.png"), full_page=True
+                        )
+                        await page.close()
+            finally:
+                await browser.close()
+
+    asyncio.run(check())
 
 
 def test_missing_report_queues_once_and_regeneration_needs_admin(
@@ -290,13 +623,20 @@ def test_admin_can_upload_private_pdf_and_duplicate_is_idempotent(
         follow_redirects=False,
     )
     assert received.status_code == 303
-    batch = db_session.scalar(select(PdfImportBatch))
+    batch = db_session.scalar(select(PdfImportBatch).where(PdfImportBatch.partner_id == partner.id))
     assert batch is not None and batch.state == "quarantined"
-    source = db_session.scalar(select(PdfSourceDocument))
+    source = db_session.get(PdfSourceDocument, batch.source_document_id)
     assert source is not None
     assert source.page_count == 1
     assert "synthetic.pdf" not in " ".join(str(value) for value in source.__dict__.values())
-    assert db_session.scalar(select(func.count()).select_from(PdfImportEvent)) == 2
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(PdfImportEvent)
+            .where(PdfImportEvent.batch_id == batch.id)
+        )
+        == 2
+    )
     detail = client.get(received.headers["location"])
     assert detail.status_code == 200
     assert "ainda não foi interpretado" in detail.text
@@ -307,7 +647,14 @@ def test_admin_can_upload_private_pdf_and_duplicate_is_idempotent(
         files={"source_pdf": ("another-name.pdf", content, "application/pdf")},
     )
     assert duplicate.status_code == 409
-    assert db_session.scalar(select(func.count()).select_from(PdfImportBatch)) == 1
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(PdfImportBatch)
+            .where(PdfImportBatch.partner_id == partner.id)
+        )
+        == 1
+    )
     actions = set(db_session.scalars(select(AuditEvent.action)).all())
     assert {"pdf_upload_succeeded", "pdf_upload_duplicate"} <= actions
 
@@ -331,6 +678,123 @@ def test_pdf_upload_requires_admin_and_csrf(portal) -> None:
         files={"source_pdf": ("synthetic.pdf", content, "application/pdf")},
     )
     assert denied.status_code == 403
+
+
+def test_real_partner_is_hidden_and_rejected_by_synthetic_scope(
+    portal, db_session: Session
+) -> None:
+    client, _, _, _ = portal
+    real_partner = Partner(external_id=f"REAL-{uuid.uuid4().hex}", name="Fora do escopo")
+    db_session.add(real_partner)
+    db_session.flush()
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    page = client.get("/portal/imports/new")
+    assert page.status_code == 200
+    assert str(real_partner.id) not in page.text
+    response = client.post(
+        "/portal/imports/new",
+        data={
+            "csrf": _csrf(page.text),
+            "partner_id": str(real_partner.id),
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+        },
+        files={"source_pdf": ("synthetic.pdf", _synthetic_source_pdf(), "application/pdf")},
+    )
+    assert response.status_code == 400
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(PdfImportBatch)
+            .where(PdfImportBatch.partner_id == real_partner.id)
+        )
+        == 0
+    )
+    assert client.get(f"/portal/partners/{real_partner.id}").status_code == 404
+
+
+def test_pdf_review_routes_filter_csrf_and_conflict(portal, db_session: Session, caplog) -> None:
+    from partner_reports.persistence.models import PdfManifestItem
+
+    client, partner, other, _ = portal
+    private_marker = "SYNTHETIC_PRIVATE_VALUE"
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=500,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        state="quarantined",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    db_session.add(
+        PdfManifestItem(
+            batch_id=batch.id,
+            source_ordinal=1,
+            folder_exact=private_marker,
+            source_page_start=1,
+            source_page_end=1,
+            quality_flags=[],
+        )
+    )
+    db_session.flush()
+    assert client.get("/portal/imports").status_code == 401
+    assert client.get(f"/portal/imports/{batch.id}").status_code == 401
+    _login(client)
+    assert client.get("/portal/imports").status_code == 403
+    assert client.get(f"/portal/imports/{batch.id}").status_code == 403
+    assert (
+        client.post(f"/portal/imports/{batch.id}/review/reject", data={"csrf": "bad"}).status_code
+        == 403
+    )
+    client.post("/portal/logout", data={"csrf": _csrf(client.get("/portal/partners").text)})
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    listed = client.get(f"/portal/imports?partner_id={partner.id}&state=quarantined")
+    assert listed.status_code == 200 and str(batch.id) in listed.text
+    assert str(batch.id) not in client.get(f"/portal/imports?partner_id={other.id}").text
+    detail = client.get(f"/portal/imports/{batch.id}")
+    assert detail.status_code == 200
+    assert "process_number_normalized" not in detail.text
+    assert private_marker not in listed.text + detail.text
+    url = f"/portal/imports/{batch.id}/review/reject"
+    assert (
+        client.post(url, data={"csrf": "bad", "revision": "0", "confirm": "yes"}).status_code == 403
+    )
+    assert client.post(url, data={"csrf": _csrf(detail.text), "revision": "0"}).status_code == 400
+    accepted = client.post(
+        url,
+        data={"csrf": _csrf(detail.text), "revision": "0", "confirm": "yes"},
+        follow_redirects=False,
+    )
+    db_session.refresh(batch)
+    assert accepted.status_code == 303 and batch.state == "rejected"
+    assert (
+        client.post(
+            url, data={"csrf": _csrf(detail.text), "revision": "0", "confirm": "yes"}
+        ).status_code
+        == 409
+    )
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.action == "pdf_review_rejected")
+        )
+        == 1
+    )
+    assert private_marker not in caplog.text
+    assert private_marker not in str(
+        [vars(event) for event in db_session.scalars(select(AuditEvent)).all()]
+    )
 
 
 def test_pdf_upload_rejects_fake_and_handles_storage_failure(
@@ -363,7 +827,14 @@ def test_pdf_upload_rejects_fake_and_handles_storage_failure(
     )
     assert failed.status_code == 503
     assert "synthetic private failure" not in failed.text
-    assert db_session.scalar(select(func.count()).select_from(PdfImportBatch)) == 0
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(PdfImportBatch)
+            .where(PdfImportBatch.partner_id == partner.id)
+        )
+        == 0
+    )
     reasons = set(db_session.scalars(select(AuditEvent.reason_code)).all())
     assert {"FILE_NOT_PDF", "STORAGE_UNAVAILABLE"} <= reasons
 
@@ -516,6 +987,9 @@ def test_portal_visual_layout_and_palette(portal) -> None:
     assert "#FFC14D" in css
     assert "#0A0A0A" in css
     assert "#EDEDED" in css
+    assert "appearance:none" in css
+    assert "scrollbar-color:var(--gold)" in css
+    assert "select option:checked" in css
     pages = {
         "login": login_html,
         "portal": list_html,
@@ -557,6 +1031,107 @@ def test_portal_visual_layout_and_palette(portal) -> None:
                         assert hover == "rgb(255, 193, 77)"
                         await page.screenshot(
                             path=str(output / f"{view}_{label}.png"), full_page=True
+                        )
+                        await page.close()
+            finally:
+                await browser.close()
+
+    asyncio.run(check())
+
+
+@pytest.mark.browser
+def test_pdf_review_visual_layout(portal, db_session: Session) -> None:
+    from playwright.async_api import async_playwright
+
+    from partner_reports.persistence.models import (
+        PdfManifestItem,
+        PdfReconciliationItem,
+        PdfReconciliationRun,
+    )
+
+    client, partner, _, _ = portal
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=500,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        parser_version="synthetic-parser",
+        parsed_item_count=1,
+        parse_quality_count=0,
+        state="needs_review",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    item = PdfManifestItem(
+        batch_id=batch.id,
+        source_ordinal=1,
+        process_number_normalized=None,
+        folder_exact="SYNTHETIC-PRIVATE-VALUE",
+        source_page_start=1,
+        source_page_end=1,
+        quality_flags=[],
+    )
+    run = PdfReconciliationRun(
+        batch_id=batch.id,
+        parser_version="synthetic-parser",
+        snapshot_sha256="a" * 64,
+        snapshot_total=1,
+        snapshot_verified_at=datetime.now(UTC),
+        result_total=1,
+        matched_count=0,
+        unmatched_count=1,
+        ambiguous_count=0,
+        duplicate_source_count=0,
+        invalid_identifier_count=0,
+    )
+    db_session.add_all([item, run])
+    db_session.flush()
+    db_session.add(
+        PdfReconciliationItem(
+            run_id=run.id,
+            manifest_item_id=item.id,
+            status="unmatched",
+            reason_code="NO_EXACT_MATCH",
+        )
+    )
+    db_session.flush()
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    pages = {
+        "imports": client.get("/portal/imports").text,
+        "review": client.get(f"/portal/imports/{batch.id}").text,
+    }
+    assert "SYNTHETIC-PRIVATE-VALUE" not in " ".join(pages.values())
+    css = client.get("/portal/assets.css").text
+
+    async def check() -> None:
+        output = Path("output/preview")
+        output.mkdir(parents=True, exist_ok=True)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                for view, source in pages.items():
+                    html = source.replace(
+                        '<link rel="stylesheet" href="/portal/assets.css">',
+                        f"<style>{css}</style>",
+                    )
+                    for width, label in ((1280, "desktop"), (375, "mobile")):
+                        page = await browser.new_page(viewport={"width": width, "height": 950})
+                        await page.set_content(html)
+                        size = await page.evaluate(
+                            "({scroll:document.documentElement.scrollWidth,inner:innerWidth})"
+                        )
+                        assert size["scroll"] <= size["inner"]
+                        await page.screenshot(
+                            path=str(output / f"pdf4_{view}_{label}.png"), full_page=True
                         )
                         await page.close()
             finally:

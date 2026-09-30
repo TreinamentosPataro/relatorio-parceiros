@@ -2,7 +2,7 @@
 
 **Versão:** 1.1  
 **Data:** 23/09/2026  
-**Estado:** contrato arquitetural da etapa PDF-0; nenhuma ingestão, extração, persistência ou interface foi implementada
+**Estado:** contrato arquitetural originado na etapa PDF-0; implementação técnica até PDF-3 registrada ao final, sem uso real ou publicação
 
 ## Finalidade e limites
 
@@ -184,7 +184,7 @@ Um lote só pode ficar `approved` quando:
 - cada item elegível possui correspondência única, ou a carteira vazia foi confirmada contra a exportação e os filtros por revisor autorizado;
 - parceiro, período, hash, versão do parser, fotografia da API, contagens e decisão estão auditados;
 - qualquer decisão humana usa ação e motivo de catálogo aprovados, sem texto livre nem fabricação de dado;
-- a separação de funções definida em P-018 foi respeitada. Enquanto pendente, somente administrador local pode revisar e nenhuma publicação é permitida.
+- a política do ADR-004 foi respeitada: somente administrador local pode revisar/decidir e cada ação fica auditada; não há quatro olhos obrigatório no MVP.
 
 Itens `unmatched` não são ligados manualmente por nome. O tratamento seguro é corrigir a origem/reexportar ou aplicar uma regra de exceção previamente aprovada em P-022, sempre por ID técnico existente e com auditoria.
 
@@ -226,4 +226,10 @@ Enquanto qualquer item estiver pendente, a saída permanece interna e `publicati
 
 ## Próximo portão
 
-Submeter este contrato e o ADR-002 à aprovação dos responsáveis e responder, no mínimo, P-018, P-019 e P-020 no momento em que cada uma bloquear a trilha. Após o aceite do contrato, a próxima etapa técnica é exclusivamente PDF-1: ingestão privada, storage e modelo do lote, ainda sem parser, OCR ou chamada à API.
+O contrato e o ADR-002 foram usados nas etapas PDF-1 a PDF-7. O ADR-004, aprovado em 25/09/2026, resolveu P-018/P-020/P-022, o escopo minimizado de P-006/P-007/P-023 e, após o dry-run PDF-7, P-012/P-019. A expiração e a restauração dessa política serão implementadas e testadas no PDF-8.
+
+**Atualização de implementação em 25/09/2026:** PDF-1 a PDF-3 foram implementadas tecnicamente em desenvolvimento/teste. As migrations, `alembic check`, suíte completa e Ruff passaram no Docker local. PDF-3 usou somente API falsa; nenhuma reconciliação real ou publicação foi autorizada. O próximo portão é PDF-4, revisão humana; o texto acima preserva a sequência original do contrato.
+
+**Atualização PDF-4 em 25/09/2026:** o portal recebeu revisão e aprovação exclusivamente sintéticas, com quatro olhos por padrão, correção técnica desabilitada por padrão, CSRF, concorrência e auditoria allowlisted. As migrations `20260925_0009/0010`, 148 testes, Ruff, `alembic check` e inspeção visual local passaram. P-018/P-022 seguem pendentes para decisão real; nenhum relatório foi publicado. O próximo portão técnico é PDF-5.
+
+**Atualização de decisão em 25/09/2026:** o ADR-004 substitui as pendências citadas acima para o MVP. A produção permitirá autoaprovação do administrador com auditoria e correção apenas por ID técnico existente. O alinhamento das flags e adaptadores produtivos ocorrerá no PDF-8; o ambiente atual continua sintético e bloqueado para produção.

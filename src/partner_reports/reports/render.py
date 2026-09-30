@@ -67,7 +67,14 @@ def to_partner_report(internal: InternalReportViewModel) -> ReportViewModel:
     if internal.partner_preview is None:
         raise UnsafeReportData("prévia indisponível: vínculo ou fonte não aprovado")
     payload = {key: getattr(internal.partner_preview, key) for key in _PARTNER_FIELDS}
-    report = ReportViewModel.model_validate(payload)
+    # Revalidate nested instances: model_copy can otherwise bypass a nested
+    # ReportValue validator before the value reaches HTML or PDF.
+    report = ReportViewModel.model_validate(
+        {
+            key: value.model_dump(mode="python") if hasattr(value, "model_dump") else value
+            for key, value in payload.items()
+        }
+    )
     if report.publication_ready:
         raise UnsafeReportData("publicação não autorizada")
     _validate_external_semantics(report)
@@ -89,6 +96,26 @@ def _validate_external_semantics(report: ReportViewModel) -> None:
         or report.cases.status is not AvailabilityStatus.AVAILABLE
     ):
         raise UnsafeReportData("fonte ou campos obrigatórios não classificados")
+    governed = (
+        report.partner,
+        report.summary,
+        report.metrics.unique_customers,
+        report.metrics.lawsuits,
+        report.customers,
+        report.cases,
+    )
+    if any(value.source != "governed_partner_mapping" for value in governed):
+        raise UnsafeReportData("fonte de carteira não classificada")
+    if report.metadata.source != "report_builder" or report.origin.source != "synchronization":
+        raise UnsafeReportData("proveniência do relatório não classificada")
+    if (
+        report.summary.status is not AvailabilityStatus.AVAILABLE
+        or report.summary.value.unique_customers != report.metrics.unique_customers.value
+        or report.summary.value.lawsuits != report.metrics.lawsuits.value
+        or len(report.customers.value) != report.metrics.unique_customers.value
+        or len(report.cases.value) != report.metrics.lawsuits.value
+    ):
+        raise UnsafeReportData("contagens da carteira inconsistentes")
     if any(
         value.status is AvailabilityStatus.AVAILABLE
         for value in (
@@ -101,7 +128,14 @@ def _validate_external_semantics(report: ReportViewModel) -> None:
         )
     ):
         raise UnsafeReportData("classificação de negócio ainda não aprovada")
+    if report.financial.status is AvailabilityStatus.AVAILABLE:
+        raise UnsafeReportData("regra e visibilidade financeira ainda não aprovadas")
     for customer in report.customers.value:
+        if (
+            customer.reference.source != "governed_partner_mapping"
+            or customer.lawsuit_references.source != "governed_partner_mapping"
+        ):
+            raise UnsafeReportData("fonte da associação de cliente não classificada")
         if not _CUSTOMER_REFERENCE.fullmatch(customer.reference.value or ""):
             raise UnsafeReportData("referência de cliente não classificada")
         if customer.lawsuit_references.status is not AvailabilityStatus.AVAILABLE or any(
@@ -110,6 +144,11 @@ def _validate_external_semantics(report: ReportViewModel) -> None:
         ):
             raise UnsafeReportData("associação de cliente não classificada")
     for case in report.cases.value:
+        if (
+            case.reference.source != "governed_partner_mapping"
+            or case.customer_references.source != "governed_partner_mapping"
+        ):
+            raise UnsafeReportData("fonte da associação de processo não classificada")
         if not _CASE_REFERENCE.fullmatch(case.reference.value or ""):
             raise UnsafeReportData("referência de processo não classificada")
         if case.customer_references.status is not AvailabilityStatus.AVAILABLE or any(
@@ -117,6 +156,10 @@ def _validate_external_semantics(report: ReportViewModel) -> None:
             for reference in case.customer_references.value or ()
         ):
             raise UnsafeReportData("associação de processo não classificada")
+        if case.latest_relevant_movement_at.status is AvailabilityStatus.AVAILABLE:
+            raise UnsafeReportData("regra de andamento relevante ainda não aprovada")
+        if case.latest_recorded_movement_at.source != "advbox.last_movements":
+            raise UnsafeReportData("fonte do andamento cronológico não classificada")
         if case.executive_status.status is AvailabilityStatus.AVAILABLE:
             raise UnsafeReportData("status executivo ainda não aprovado")
 

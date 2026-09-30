@@ -38,3 +38,6 @@ tmp/
 .vercel/
 dist/
 build/
+deploy/production.env
+deploy/restic.env
+deploy/advbox.env

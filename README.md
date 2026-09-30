@@ -11,8 +11,8 @@ Aplicação multiparceiro com sincronização Advbox somente leitura, modelo nor
 - Playwright para geração local de PDF;
 - Argon2id e sessões PostgreSQL para a prévia autenticada local;
 - pytest, respx e Ruff para qualidade;
-- Docker Compose para desenvolvimento local;
-- runtime Python/FastAPI da Vercel como alvo de hospedagem.
+- Docker Compose para desenvolvimento local e futura implantação em VPS;
+- uma única VPS Linux como alvo de hospedagem do MVP.
 
 ## Preparação local com Docker
 
@@ -91,7 +91,7 @@ docker compose run --rm app python -m partner_reports.integrations.advbox.linkag
 
 A configuração é validada por `pydantic-settings`. `APP_ENV` e `DATABASE_URL` são obrigatórias. Uma ausência ou URL incompatível com PostgreSQL interrompe a inicialização com erro de validação; o endpoint de saúde não devolve configurações nem segredos.
 
-O arquivo `.env` é ignorado pelo Git. Em produção, use variáveis de ambiente da Vercel e nunca grave credenciais no repositório, imagem, documentação ou logs.
+O arquivo `.env` é ignorado pelo Git. Em produção, use um arquivo de ambiente protegido na VPS, fora da imagem e do repositório, e nunca grave credenciais em documentação ou logs.
 
 ## Banco e migrations
 
@@ -110,7 +110,7 @@ O schema usa IDs internos, IDs Advbox únicos, valores monetários `NUMERIC`/`De
 
 ```text
 src/
-├── app.py                         entrada compatível com a Vercel
+├── app.py                         entrada ASGI da aplicação
 └── partner_reports/
     ├── config.py                  configuração tipada
     ├── main.py                    fábrica da aplicação
@@ -123,16 +123,16 @@ src/
 tests/                             testes automatizados
 ```
 
-## Vercel
+## VPS
 
-`src/app.py` expõe a aplicação ASGI reconhecida pelo runtime Python da Vercel. O deploy não usa o Dockerfile. PostgreSQL, PDFs, sessões e jobs deverão usar serviços persistentes externos; o filesystem da função não será usado como armazenamento.
+`src/app.py` expõe a aplicação ASGI. O alvo aprovado para o MVP é uma única VPS Linux com Docker Compose, proxy HTTPS, aplicação, worker e PostgreSQL. Banco e arquivos usarão volumes persistentes privados; o proxy nunca servirá o diretório de fontes diretamente. Backups criptografados deverão sair da VPS e ter restauração testada.
 
-Não publique esta aplicação profissional no plano Hobby/Free. A implantação fica bloqueada até existir plano Vercel adequado, banco externo, armazenamento privado de PDFs e autorização explícita.
+`compose.production.yml` e `compose.staging.yml` contêm a preparação local do PDF-8: imagens imutáveis informadas pelo operador, processos sem privilégio, filesystem somente leitura, redes internas, volumes separados, Caddy, execução manual do worker, retenção e backup/restore com Restic. Esses arquivos ainda não comprovam implantação: o inventário da VPS, o staging sintético, HTTPS, firewall e a restauração em host separado continuam obrigatórios. Consulte `docs/PREPARACAO_PDF8.md`, `docs/RUNBOOK.md` e `docs/ADR/ADR-003-implantacao-vps.md`.
 
 ## Limites atuais
 
 - a aplicação web não chama o Advbox ao navegar no portal;
 - os arquivos servidos localmente são apenas amostras `SYNTHETIC-*` das etapas 7 e 9;
 - a fila de regeneração é processada pelo worker local somente para fontes sintéticas; consulte `docs/RUNBOOK.md`;
-- o portal não serve PDFs/HTML em produção até haver storage privado e portões aprovados;
-- nunca execute carga real integral nem publique a aplicação profissional no plano Hobby/Free.
+- o portal não serve PDFs/HTML em produção até existir storage privado persistente na VPS e os portões serem aprovados;
+- nunca execute carga real integral nem implante produção antes da homologação e da autorização específica.

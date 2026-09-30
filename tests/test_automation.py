@@ -20,6 +20,8 @@ from partner_reports.jobs.automation import (
 )
 from partner_reports.persistence.models import (
     Partner,
+    PdfImportBatch,
+    PdfSourceDocument,
     ReportGenerationRequest,
     ReportVersion,
     SyntheticPortfolio,
@@ -31,7 +33,9 @@ pytestmark = pytest.mark.database
 
 @pytest.fixture
 def setup(db_session: Session, tmp_path: Path):
-    partner = Partner(external_id=f"SYNTHETIC-AUTO-{uuid.uuid4().hex}", name="Carteira sintética")
+    # Alphabetic synthetic IDs cannot accidentally resemble a blocked document number.
+    code = "".join("abcdefghijklmnop"[int(digit, 16)] for digit in uuid.uuid4().hex)
+    partner = Partner(external_id=f"SYNTHETIC-AUTO-{code}", name="Carteira sintética")
     db_session.add(partner)
     db_session.flush()
     db_session.add(SyntheticPortfolio(partner_id=partner.id, scenario="one", revision=1))
@@ -68,6 +72,40 @@ def test_cycle_idempotent_and_incremental(setup, db_session):
     db_session.flush()
     changed = enqueue_cycle(sessions, AppEnvironment.TEST, f"test-{uuid.uuid4().hex}")
     assert changed["queued"] == 1
+
+
+def test_approved_pdf_batch_takes_precedence_over_generic_synthetic_cycle(setup, db_session):
+    _, partner_id, _ = setup
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=1000,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add(
+        PdfImportBatch(
+            source_document_id=source.id,
+            partner_id=partner_id,
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 25),
+            state="approved",
+        )
+    )
+    db_session.flush()
+    sessions, _, _ = setup
+    result = enqueue_cycle(sessions, AppEnvironment.TEST, f"test-{uuid.uuid4().hex}")
+    assert result["queued"] == 0
+    assert (
+        db_session.scalar(
+            select(ReportGenerationRequest.id).where(
+                ReportGenerationRequest.partner_id == partner_id
+            )
+        )
+        is None
+    )
 
 
 def test_pdf_failure_keeps_previous_version_and_retry(setup, db_session):
@@ -216,10 +254,11 @@ def test_cycle_mutex_and_failed_only_retry(setup, db_session):
     assert request.status == "pending" and request.attempt_count == 0
 
 
-def test_production_is_closed(setup):
+def test_production_like_runtime_remains_synthetic_only(setup):
     sessions, _, tmp_path = setup
-    with pytest.raises(RuntimeError):
-        enqueue_cycle(sessions, AppEnvironment.PRODUCTION, "forbidden")
-    with pytest.raises(RuntimeError):
-        asyncio.run(process_one(sessions, AppEnvironment.PRODUCTION, tmp_path, pdf_renderer=_pdf))
+    result = enqueue_cycle(sessions, AppEnvironment.PRODUCTION, f"safe-{uuid.uuid4().hex}")
+    assert result["status"] == "succeeded"
+    assert asyncio.run(
+        process_one(sessions, AppEnvironment.PRODUCTION, tmp_path, pdf_renderer=_pdf)
+    ) in {"succeeded", "empty"}
     assert scheduled_key(datetime(2026, 9, 17, 2, tzinfo=UTC)) == "daily-2026-09-16"

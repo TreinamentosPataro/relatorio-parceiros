@@ -36,6 +36,8 @@ audit-advbox = "partner_reports.integrations.advbox.audit_cli:main"
 validate-advbox-linkage = "partner_reports.integrations.advbox.linkage_cli:main"
 sync-advbox = "partner_reports.jobs.sync_cli:main"
 homologate-advbox = "partner_reports.jobs.homologation_cli:main"
+homologate-pdf = "partner_reports.pdf_imports.homologation_cli:main"
+homologate-pdf-persist = "partner_reports.pdf_imports.private_pass_cli:main"
 portal-user = "partner_reports.web.user_cli:main"
 seed-portal-demo = "partner_reports.web.demo_cli:main"
 

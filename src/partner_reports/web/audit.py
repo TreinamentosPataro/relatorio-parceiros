@@ -21,6 +21,7 @@ _ACTIONS = frozenset(
         "report_download",
         "artifact_denied",
         "generation_requested",
+        "report_version_restored",
         "account_created",
         "account_disabled",
         "sessions_revoked",
@@ -30,6 +31,11 @@ _ACTIONS = frozenset(
         "pdf_upload_rejected",
         "pdf_upload_duplicate",
         "pdf_upload_failed",
+        "pdf_review_approved",
+        "pdf_review_rejected",
+        "pdf_review_corrected",
+        "pdf_review_reprocess_requested",
+        "pdf_review_superseded",
     }
 )
 _ENTITIES = frozenset({"none", "user", "partner", "report_version", "pdf_import_batch"})

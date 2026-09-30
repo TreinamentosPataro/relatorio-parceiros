@@ -28,7 +28,7 @@ Os prompts completos estão em `PLANO_EXECUCAO_IMPORTACAO_PDF.md`. Este roteiro 
 
 ## Próxima ação
 
-PDF-0 foi concluída documentalmente. Revise e aprove `docs/CONTRATO_IMPORTACAO_PDF.md`, o ADR-002 e as prioridades do escritório; em seguida execute somente o `PROMPT PDF-1 — Ingestão privada, storage e modelo do lote`. PDF-1 não implementa parser, OCR nem chamada real à API.
+PDF-0 a PDF-7 foram concluídos. O PDF-7 persistiu sete lotes privados de homologação, manteve quatro identificadores explicitamente pendentes, gerou uma prévia interna agregada e recebeu GO. Consulte `docs/HOMOLOGACAO_IMPORTACAO_PDF.md`. A próxima etapa é preparar o staging sintético e a VPS no PDF-8; dados reais na VPS e go-live permanecem bloqueados pelos portões próprios das etapas PDF-8/PDF-9.
 
 ## Mensagem de revisão entre etapas
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Partner Reports offsite backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Sao_Paulo
+RandomizedDelaySec=15m
+AccuracySec=1m
+Persistent=true
+Unit=partner-reports-backup.service
+
+[Install]
+WantedBy=timers.target

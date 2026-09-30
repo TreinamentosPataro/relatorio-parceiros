@@ -6,7 +6,6 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from importlib.resources import files
-from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,9 +18,23 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from partner_reports.config import AppEnvironment
+from partner_reports.config import PdfDataScope, Settings
+from partner_reports.jobs.pdf_batch_reports import enqueue_approved_batch
+from partner_reports.pdf_imports.reporting import BatchReportUnavailable
+from partner_reports.pdf_imports.review_service import (
+    ReviewConflict,
+    approve_batch,
+    correct_item,
+    reject_batch,
+    reprocessing_pending,
+    request_reprocessing,
+)
 from partner_reports.pdf_imports.service import find_duplicate, receive_pdf
-from partner_reports.pdf_imports.storage import LocalPrivatePdfStorage, PdfStorageUnavailable
+from partner_reports.pdf_imports.storage import (
+    PdfStorageUnavailable,
+    PrivatePdfStorage,
+    build_pdf_storage,
+)
 from partner_reports.pdf_imports.validation import (
     MAX_PDF_BYTES,
     PdfRejected,
@@ -30,8 +43,13 @@ from partner_reports.pdf_imports.validation import (
 )
 from partner_reports.persistence.models import (
     AppUser,
+    Lawsuit,
     Partner,
     PdfImportBatch,
+    PdfImportReview,
+    PdfManifestItem,
+    PdfReconciliationItem,
+    PdfReconciliationRun,
     PdfSourceDocument,
     PortalSession,
     ReportGenerationRequest,
@@ -39,7 +57,11 @@ from partner_reports.persistence.models import (
     SyncChangedPartner,
     SyncRun,
 )
-from partner_reports.web.artifacts import ArtifactUnavailable, SyntheticArtifactStore
+from partner_reports.web.artifacts import (
+    ArtifactUnavailable,
+    SyntheticArtifactStore,
+    build_artifact_store,
+)
 from partner_reports.web.audit import emit_audit, record_audit, request_correlation_id
 from partner_reports.web.security import (
     COOKIE_NAME,
@@ -148,7 +170,10 @@ def _latest_versions(db: Session, partner_ids: list[uuid.UUID]) -> dict[uuid.UUI
         return {}
     versions = db.scalars(
         select(ReportVersion)
-        .where(ReportVersion.partner_id.in_(partner_ids))
+        .where(
+            ReportVersion.partner_id.in_(partner_ids),
+            ReportVersion.status.in_(("validated", "published")),
+        )
         .order_by(ReportVersion.generated_at.desc(), ReportVersion.version.desc())
     )
     result: dict[uuid.UUID, ReportVersion] = {}
@@ -211,10 +236,20 @@ def _status(
     return "atualizado"
 
 
-def _catalog(db: Session, query: str, status: str) -> list[dict]:
+def _partner_scope_clause(settings: Settings):
+    if settings.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
+        return Partner.external_id.startswith("SYNTHETIC-")
+    return Partner.external_id.in_(settings.pilot_partner_ids)
+
+
+def _catalog(db: Session, query: str, status: str, settings: Settings) -> list[dict]:
     partners = db.scalars(
         select(Partner)
-        .where(Partner.status == "active", Partner.deleted_at.is_(None))
+        .where(
+            Partner.status == "active",
+            Partner.deleted_at.is_(None),
+            _partner_scope_clause(settings),
+        )
         .order_by(Partner.name, Partner.external_id)
     ).all()
     if query:
@@ -241,9 +276,14 @@ def _sync_at(db: Session) -> datetime | None:
     return db.scalar(select(func.max(SyncRun.finished_at)).where(SyncRun.status == "succeeded"))
 
 
-def _require_partner(db: Session, partner_id: uuid.UUID) -> Partner:
+def _require_partner(db: Session, partner_id: uuid.UUID, settings: Settings) -> Partner:
     partner = db.get(Partner, partner_id)
-    if partner is None or partner.status != "active" or partner.deleted_at is not None:
+    if (
+        partner is None
+        or partner.status != "active"
+        or partner.deleted_at is not None
+        or not settings.partner_is_in_data_scope(partner.external_id)
+    ):
         raise HTTPException(status_code=404, detail="Parceiro não encontrado")
     return partner
 
@@ -253,10 +293,14 @@ def _require_admin(db: Session, user: AppUser) -> None:
         raise HTTPException(status_code=403, detail="Acesso não autorizado")
 
 
-def _active_partners(db: Session) -> list[Partner]:
+def _active_partners(db: Session, settings: Settings) -> list[Partner]:
     return db.scalars(
         select(Partner)
-        .where(Partner.status == "active", Partner.deleted_at.is_(None))
+        .where(
+            Partner.status == "active",
+            Partner.deleted_at.is_(None),
+            _partner_scope_clause(settings),
+        )
         .order_by(Partner.name, Partner.external_id)
     ).all()
 
@@ -265,6 +309,7 @@ def _upload_page(
     db: Session,
     user: AppUser,
     csrf: str,
+    settings: Settings,
     *,
     error: str | None = None,
     status_code: int = 200,
@@ -273,7 +318,7 @@ def _upload_page(
         "pdf_upload.html.j2",
         user=user,
         csrf=csrf,
-        partners=_active_partners(db),
+        partners=_active_partners(db, settings),
         error=error,
         max_mib=MAX_PDF_BYTES // (1024 * 1024),
     )
@@ -310,9 +355,31 @@ async def _read_pdf_form(request: Request) -> tuple[dict[str, str], UploadFile, 
     return fields, upload, bytes(body)
 
 
-def _queue(db: Session, partner_id: uuid.UUID, user_id: uuid.UUID) -> None:
+def _queue(db: Session, partner_id: uuid.UUID, user_id: uuid.UUID, settings: Settings) -> None:
     # Lock the partner row, making duplicate requests for one partner serializable.
     db.scalar(select(Partner.id).where(Partner.id == partner_id).with_for_update())
+    batch = db.scalar(
+        select(PdfImportBatch)
+        .where(PdfImportBatch.partner_id == partner_id, PdfImportBatch.state == "approved")
+        .order_by(PdfImportBatch.created_at.desc(), PdfImportBatch.id.desc())
+        .limit(1)
+    )
+    if batch is not None:
+        try:
+            enqueue_approved_batch(
+                db,
+                batch.id,
+                environment=settings.app_env,
+                requested_by=user_id,
+                settings=settings,
+            )
+        except BatchReportUnavailable as exc:
+            raise HTTPException(
+                status_code=409, detail="Geração indisponível para este lote"
+            ) from exc
+        return
+    if not settings.synthetic_validation_only:
+        raise HTTPException(status_code=409, detail="Lote aprovado necessário")
     active = db.scalar(
         select(ReportGenerationRequest.id).where(
             ReportGenerationRequest.partner_id == partner_id,
@@ -442,7 +509,7 @@ def partners(
         or page < 1
     ):
         raise HTTPException(status_code=400, detail="Filtro inválido")
-    rows = _catalog(db, q.strip(), status)
+    rows = _catalog(db, q.strip(), status, request.app.state.settings)
     total_pages = max(1, (len(rows) + _PAGE_SIZE - 1) // _PAGE_SIZE)
     if page > total_pages:
         page = total_pages
@@ -459,7 +526,7 @@ def partners(
         total=len(rows),
         sync_at=_sync_at(db),
         is_admin="portal_admin" in get_user_roles(db, user.id),
-        demo=request.app.state.settings.app_env is not AppEnvironment.PRODUCTION,
+        demo=request.app.state.settings.synthetic_validation_only,
     )
     _audit_commit(db, request, "catalog_view", actor_user_id=user.id)
     return response
@@ -470,14 +537,14 @@ def partner_detail(
     partner_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
 ) -> Response:
     record, user = _need_user(db, request)
-    partner = _require_partner(db, partner_id)
+    partner = _require_partner(db, partner_id, request.app.state.settings)
     versions = db.scalars(
         select(ReportVersion)
         .where(ReportVersion.partner_id == partner.id)
         .order_by(ReportVersion.generated_at.desc(), ReportVersion.version.desc())
         .limit(20)
     ).all()
-    latest = versions[0] if versions else None
+    latest = next((row for row in versions if row.status in {"validated", "published"}), None)
     latest_request = _latest_requests(db, [partner.id]).get(partner.id)
     state = _status(latest, latest_request, _changed_at(db, [partner.id]).get(partner.id))
     response = _render(
@@ -486,11 +553,12 @@ def partner_detail(
         csrf=record.csrf_token,
         partner=partner,
         versions=versions,
+        latest_valid=latest,
         version_labels=_VERSION_LABELS,
         state=state,
         sync_at=_sync_at(db),
         is_admin="portal_admin" in get_user_roles(db, user.id),
-        demo=request.app.state.settings.app_env is not AppEnvironment.PRODUCTION,
+        demo=request.app.state.settings.synthetic_validation_only,
     )
     _audit_commit(
         db,
@@ -507,7 +575,7 @@ def partner_detail(
 def pdf_upload_page(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
     record, user = _need_user(db, request)
     _require_admin(db, user)
-    return _upload_page(db, user, record.csrf_token)
+    return _upload_page(db, user, record.csrf_token, request.app.state.settings)
 
 
 @router.post("/portal/imports/new")
@@ -531,6 +599,7 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             db,
             user,
             csrf_token,
+            request.app.state.settings,
             error="O arquivo não atende aos requisitos da importação.",
             status_code=400,
         )
@@ -542,7 +611,12 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
         if period_end < period_start:
             raise ValueError
         partner = db.get(Partner, partner_id)
-        if partner is None or partner.status != "active" or partner.deleted_at is not None:
+        if (
+            partner is None
+            or partner.status != "active"
+            or partner.deleted_at is not None
+            or not request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+        ):
             raise ValueError
     except (KeyError, ValueError):
         _audit_commit(
@@ -556,6 +630,7 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             db,
             user,
             csrf_token,
+            request.app.state.settings,
             error="Parceiro ou período inválido.",
             status_code=400,
         )
@@ -576,11 +651,12 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             db,
             user,
             csrf_token,
+            request.app.state.settings,
             error="O arquivo não atende aos requisitos da importação.",
             status_code=400,
         )
 
-    storage: LocalPrivatePdfStorage = request.app.state.pdf_import_storage
+    storage: PrivatePdfStorage = request.app.state.pdf_import_storage
     result = None
     try:
         result = receive_pdf(
@@ -620,6 +696,7 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
                 db,
                 user,
                 csrf_token,
+                request.app.state.settings,
                 error="Não foi possível guardar o arquivo com segurança.",
                 status_code=503,
             )
@@ -648,6 +725,7 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             db,
             user,
             csrf_token,
+            request.app.state.settings,
             error="Não foi possível guardar o arquivo com segurança.",
             status_code=503,
         )
@@ -662,10 +740,86 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             db,
             user,
             csrf_token,
+            request.app.state.settings,
             error="Este arquivo já foi recebido e não criou um novo lote.",
             status_code=409,
         )
     return RedirectResponse(f"/portal/imports/{result.batch.id}", status_code=303)
+
+
+@router.get("/portal/imports")
+def pdf_import_list(
+    request: Request,
+    partner_id: uuid.UUID | None = None,
+    state: str = "all",
+    period_start: date | None = None,
+    period_end: date | None = None,
+    page: int = 1,
+    db: Session = _DB_DEPENDENCY,
+) -> Response:
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    allowed = {
+        "all",
+        "uploaded",
+        "quarantined",
+        "parsing",
+        "parsed",
+        "reconciling",
+        "needs_review",
+        "approved",
+        "rejected",
+        "failed",
+        "superseded",
+    }
+    if (
+        state not in allowed
+        or page < 1
+        or (period_start and period_end and period_end < period_start)
+    ):
+        raise HTTPException(status_code=400, detail="Filtro inválido")
+    query = (
+        select(PdfImportBatch, Partner)
+        .join(Partner, Partner.id == PdfImportBatch.partner_id)
+        .where(_partner_scope_clause(request.app.state.settings))
+    )
+    if partner_id:
+        query = query.where(PdfImportBatch.partner_id == partner_id)
+    if state != "all":
+        query = query.where(PdfImportBatch.state == state)
+    if period_start:
+        query = query.where(PdfImportBatch.period_end >= period_start)
+    if period_end:
+        query = query.where(PdfImportBatch.period_start <= period_end)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.execute(
+        query.order_by(PdfImportBatch.created_at.desc(), PdfImportBatch.id.desc())
+        .offset((page - 1) * _PAGE_SIZE)
+        .limit(_PAGE_SIZE)
+    ).all()
+    runs = {}
+    for batch, _ in rows:
+        runs[batch.id] = db.scalar(
+            select(PdfReconciliationRun)
+            .where(PdfReconciliationRun.batch_id == batch.id)
+            .order_by(PdfReconciliationRun.created_at.desc(), PdfReconciliationRun.id.desc())
+            .limit(1)
+        )
+    return _render(
+        "pdf_import_list.html.j2",
+        user=user,
+        csrf=record.csrf_token,
+        rows=rows,
+        runs=runs,
+        partners=_active_partners(db, request.app.state.settings),
+        state=state,
+        partner_id=partner_id,
+        period_start=period_start,
+        period_end=period_end,
+        page=page,
+        total=total,
+        pages=max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE),
+    )
 
 
 @router.get("/portal/imports/{batch_id}")
@@ -678,11 +832,81 @@ def pdf_import_detail(
         select(PdfImportBatch, PdfSourceDocument, Partner)
         .join(PdfSourceDocument, PdfSourceDocument.id == PdfImportBatch.source_document_id)
         .join(Partner, Partner.id == PdfImportBatch.partner_id)
-        .where(PdfImportBatch.id == batch_id)
+        .where(
+            PdfImportBatch.id == batch_id,
+            _partner_scope_clause(request.app.state.settings),
+        )
     ).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Importação não encontrada")
     batch, source, partner = row
+    run = db.scalar(
+        select(PdfReconciliationRun)
+        .where(PdfReconciliationRun.batch_id == batch.id)
+        .order_by(PdfReconciliationRun.created_at.desc(), PdfReconciliationRun.id.desc())
+        .limit(1)
+    )
+    items = db.scalars(
+        select(PdfReconciliationItem)
+        .where(PdfReconciliationItem.run_id == run.id)
+        .order_by(PdfReconciliationItem.id)
+        if run
+        else select(PdfReconciliationItem).where(False)
+    ).all()
+    reviews = db.scalars(
+        select(PdfImportReview)
+        .where(PdfImportReview.batch_id == batch.id)
+        .order_by(PdfImportReview.review_revision.desc())
+    ).all()
+    replacements = db.scalars(
+        select(PdfImportBatch).where(
+            PdfImportBatch.partner_id == batch.partner_id,
+            PdfImportBatch.period_start == batch.period_start,
+            PdfImportBatch.period_end == batch.period_end,
+            PdfImportBatch.state == "approved",
+            PdfImportBatch.id != batch.id,
+        )
+    ).all()
+    technical_ids = (
+        db.scalars(
+            select(Lawsuit.advbox_id)
+            .where(Lawsuit.status == "active")
+            .order_by(Lawsuit.advbox_id)
+            .limit(500)
+        ).all()
+        if request.app.state.settings.pdf_synthetic_corrections
+        and request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+        else []
+    )
+    corrected_ids = {
+        review.reconciliation_item_id
+        for review in reviews
+        if review.decision == "corrected" and review.reconciliation_item_id is not None
+    }
+    manifest_flags = db.scalars(
+        select(PdfManifestItem.quality_flags).where(PdfManifestItem.batch_id == batch.id)
+    ).all()
+    manifest_blocked = batch.parsed_item_count != len(manifest_flags) or any(
+        set(flags) - {"page_continuation"} for flags in manifest_flags
+    )
+    pending_reprocess = run is not None and reprocessing_pending(db, batch, run)
+    approval_blocked = (
+        not run
+        or not items
+        or pending_reprocess
+        or bool(replacements)
+        or manifest_blocked
+        or any(
+            item.status != "matched"
+            and not (
+                technical_ids
+                and item.status in {"unmatched", "ambiguous"}
+                and item.id in corrected_ids
+            )
+            for item in items
+        )
+        or (request.app.state.settings.pdf_four_eyes and batch.uploaded_by == user.id)
+    )
     return _render(
         "pdf_import_detail.html.j2",
         user=user,
@@ -690,7 +914,154 @@ def pdf_import_detail(
         batch=batch,
         source=source,
         partner=partner,
+        run=run,
+        items=items,
+        reviews=reviews,
+        replacements=replacements,
+        technical_ids=technical_ids,
+        corrections_enabled=bool(technical_ids) and not pending_reprocess,
+        approval_blocked=approval_blocked,
+        pending_reprocess=pending_reprocess,
+        synthetic_generation=(
+            batch.state == "approved"
+            and request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+        ),
     )
+
+
+@router.post("/portal/imports/{batch_id}/review/{action}")
+async def pdf_review_action(
+    batch_id: uuid.UUID, action: str, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    form = await _form(request)
+    _csrf(form, record)
+    if form.get("confirm") != "yes" or action not in {
+        "approve",
+        "reject",
+        "reprocess",
+        "correct",
+        "supersede",
+    }:
+        raise HTTPException(status_code=400, detail="Decisão inválida")
+    try:
+        revision = int(form["revision"])
+        if revision < 0:
+            raise ValueError
+        environment = request.app.state.settings.app_env
+        if action == "approve":
+            approve_batch(
+                db,
+                batch_id,
+                revision,
+                user.id,
+                environment=environment,
+                four_eyes=request.app.state.settings.pdf_four_eyes,
+                allow_corrections=request.app.state.settings.pdf_synthetic_corrections,
+                settings=request.app.state.settings,
+            )
+            audit_action = "pdf_review_approved"
+        elif action == "supersede":
+            old_id = uuid.UUID(form["old_batch_id"])
+            approve_batch(
+                db,
+                batch_id,
+                revision,
+                user.id,
+                environment=environment,
+                four_eyes=request.app.state.settings.pdf_four_eyes,
+                allow_corrections=request.app.state.settings.pdf_synthetic_corrections,
+                replace_batch_id=old_id,
+                settings=request.app.state.settings,
+            )
+            audit_action = "pdf_review_superseded"
+        elif action == "reject":
+            reject_batch(
+                db,
+                batch_id,
+                revision,
+                user.id,
+                environment=environment,
+                settings=request.app.state.settings,
+            )
+            audit_action = "pdf_review_rejected"
+        elif action == "reprocess":
+            request_reprocessing(
+                db,
+                batch_id,
+                revision,
+                user.id,
+                environment=environment,
+                settings=request.app.state.settings,
+            )
+            audit_action = "pdf_review_reprocess_requested"
+        else:
+            correct_item(
+                db,
+                batch_id,
+                uuid.UUID(form["item_id"]),
+                int(form["advbox_id"]),
+                revision,
+                user.id,
+                environment=environment,
+                enabled=request.app.state.settings.pdf_synthetic_corrections,
+                settings=request.app.state.settings,
+            )
+            audit_action = "pdf_review_corrected"
+        event = record_audit(
+            db,
+            action=audit_action,
+            actor_user_id=user.id,
+            entity_type="pdf_import_batch",
+            entity_id=batch_id,
+            correlation_id=request_correlation_id(request),
+        )
+        db.commit()
+        emit_audit(event)
+    except (KeyError, ValueError, ReviewConflict) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Decisão inválida ou lote alterado") from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Conflito de vínculos") from exc
+    return RedirectResponse(f"/portal/imports/{batch_id}", status_code=303)
+
+
+@router.post("/portal/imports/{batch_id}/generate")
+async def generate_from_pdf_batch(
+    batch_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    form = await _form(request)
+    _csrf(form, record)
+    if form.get("confirm") != "yes":
+        raise HTTPException(status_code=400, detail="Confirmação necessária")
+    try:
+        queued = enqueue_approved_batch(
+            db,
+            batch_id,
+            environment=request.app.state.settings.app_env,
+            requested_by=user.id,
+            settings=request.app.state.settings,
+        )
+        if queued:
+            event = record_audit(
+                db,
+                action="generation_requested",
+                actor_user_id=user.id,
+                entity_type="pdf_import_batch",
+                entity_id=batch_id,
+                correlation_id=request_correlation_id(request),
+            )
+        db.commit()
+        if queued:
+            emit_audit(event)
+    except (BatchReportUnavailable, IntegrityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Geração indisponível para este lote") from exc
+    return RedirectResponse(f"/portal/imports/{batch_id}", status_code=303)
 
 
 @router.post("/portal/partners/{partner_id}/open")
@@ -699,13 +1070,13 @@ async def open_or_queue(
 ) -> Response:
     record, user = _need_user(db, request)
     _csrf(await _form(request), record)
-    _require_partner(db, partner_id)
+    _require_partner(db, partner_id, request.app.state.settings)
     version = _latest_versions(db, [partner_id]).get(partner_id)
     if version and version.status in {"published", "validated"}:
         return RedirectResponse(
             f"/portal/partners/{partner_id}/versions/{version.id}/html", status_code=303
         )
-    _queue(db, partner_id, user.id)
+    _queue(db, partner_id, user.id, request.app.state.settings)
     _audit_commit(
         db,
         request,
@@ -725,8 +1096,8 @@ async def regenerate(
     _csrf(await _form(request), record)
     if "portal_admin" not in get_user_roles(db, user.id):
         raise HTTPException(status_code=403, detail="Acesso não autorizado")
-    _require_partner(db, partner_id)
-    _queue(db, partner_id, user.id)
+    _require_partner(db, partner_id, request.app.state.settings)
+    _queue(db, partner_id, user.id, request.app.state.settings)
     _audit_commit(
         db,
         request,
@@ -735,6 +1106,65 @@ async def regenerate(
         entity_type="partner",
         entity_id=partner_id,
     )
+    return RedirectResponse(f"/portal/partners/{partner_id}", status_code=303)
+
+
+@router.post("/portal/partners/{partner_id}/versions/{version_id}/restore")
+async def restore_report_version(
+    partner_id: uuid.UUID,
+    version_id: uuid.UUID,
+    request: Request,
+    db: Session = _DB_DEPENDENCY,
+) -> Response:
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    form = await _form(request)
+    _csrf(form, record)
+    if form.get("confirm") != "yes":
+        raise HTTPException(status_code=400, detail="Confirmação necessária")
+    _require_partner(db, partner_id, request.app.state.settings)
+    db.scalar(select(Partner.id).where(Partner.id == partner_id).with_for_update())
+    target = db.get(ReportVersion, version_id, with_for_update=True)
+    if (
+        target is None
+        or target.partner_id != partner_id
+        or target.status not in {"validated", "published", "superseded"}
+        or not target.storage_object_key
+    ):
+        raise HTTPException(status_code=404, detail="Versão não disponível")
+    store: SyntheticArtifactStore = request.app.state.artifact_store
+    try:
+        html = store.read(target.storage_object_key, "html")
+        pdf = store.read(target.storage_object_key, "pdf")
+        if target.pdf_batch_id is not None and (
+            not target.content_sha256
+            or hashlib.sha256(html + pdf).hexdigest() != target.content_sha256
+        ):
+            raise ArtifactUnavailable
+    except ArtifactUnavailable as exc:
+        raise HTTPException(status_code=404, detail="Versão não disponível") from exc
+    newer = db.scalars(
+        select(ReportVersion)
+        .where(
+            ReportVersion.partner_id == partner_id,
+            ReportVersion.status.in_(("validated", "published")),
+            ReportVersion.generated_at > target.generated_at,
+        )
+        .with_for_update()
+    ).all()
+    for row in newer:
+        row.status = "superseded"
+    target.status = "validated"
+    event = record_audit(
+        db,
+        action="report_version_restored",
+        actor_user_id=user.id,
+        entity_type="report_version",
+        entity_id=target.id,
+        correlation_id=request_correlation_id(request),
+    )
+    db.commit()
+    emit_audit(event)
     return RedirectResponse(f"/portal/partners/{partner_id}", status_code=303)
 
 
@@ -749,7 +1179,7 @@ def artifact(
     user = None
     try:
         _, user = _need_user(db, request)
-        _require_partner(db, partner_id)
+        _require_partner(db, partner_id, request.app.state.settings)
     except HTTPException:
         _audit_commit(
             db,
@@ -782,6 +1212,14 @@ def artifact(
     store: SyntheticArtifactStore = request.app.state.artifact_store
     try:
         content = store.read(version.storage_object_key, kind)
+        if version.pdf_batch_id is not None:
+            html = content if kind == "html" else store.read(version.storage_object_key, "html")
+            pdf = content if kind == "pdf" else store.read(version.storage_object_key, "pdf")
+            if (
+                not version.content_sha256
+                or hashlib.sha256(html + pdf).hexdigest() != version.content_sha256
+            ):
+                raise ArtifactUnavailable
     except ArtifactUnavailable as exc:
         _audit_commit(
             db,
@@ -819,8 +1257,12 @@ def artifact(
 def install_portal(app) -> None:
     engine = create_engine(app.state.settings.database_url.get_secret_value(), pool_pre_ping=True)
     app.state.session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    app.state.artifact_store = SyntheticArtifactStore(Path("output"), app.state.settings.app_env)
-    app.state.pdf_import_storage = LocalPrivatePdfStorage(
+    app.state.artifact_store = build_artifact_store(
+        app.state.settings.report_storage_root,
+        app.state.settings.app_env,
+        app.state.settings.pdf_data_scope,
+    )
+    app.state.pdf_import_storage = build_pdf_storage(
         app.state.settings.pdf_storage_root, app.state.settings.app_env
     )
     app.include_router(router)
@@ -885,7 +1327,7 @@ def install_portal(app) -> None:
             response.headers["X-Frame-Options"] = "DENY"
             response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-            if request.app.state.settings.is_production:
+            if request.app.state.settings.is_deployed:
                 response.headers["Strict-Transport-Security"] = (
                     "max-age=31536000; includeSubDomains"
                 )

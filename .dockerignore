@@ -1,6 +1,12 @@
 .git
 .env
 .env.*
+deploy/production.env
+deploy/restic.env
+deploy/advbox.env
+storage/
+output/
+.env.*
 !.env.example
 .venv
 __pycache__

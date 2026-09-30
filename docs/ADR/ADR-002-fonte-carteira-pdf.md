@@ -71,7 +71,7 @@ O ADR-001 continua válido quanto ao modelo normalizado de vínculo, IDs estáve
 ## Controles obrigatórios decorrentes
 
 1. Validar assinatura, MIME, tamanho, páginas, criptografia, camada de texto e versão de layout antes de extrair.
-2. Calcular SHA-256, detectar reenvio idêntico e manter storage privado fora do filesystem persistente da Vercel.
+2. Calcular SHA-256, detectar reenvio idêntico e manter storage em volume privado persistente, fora da camada do contêiner e sem exposição direta pelo proxy.
 3. Persistir apenas manifesto allowlisted e métricas sanitizadas; texto integral fica no máximo em memória.
 4. Versionar parser/layout e registrar páginas de origem para cada item.
 5. Falhar fechado para scan, OCR, layout desconhecido, bloco incompleto e limite excedido.

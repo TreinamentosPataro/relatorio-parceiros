@@ -1,7 +1,7 @@
 # Plano de execução — importação manual de PDF do Advbox
 
 **Data:** 23/09/2026  
-**Estado:** PDF-0 e PDF-1 concluídas; ingestão privada validada somente com PDFs sintéticos em desenvolvimento/teste; PDF-2 ainda não iniciada  
+**Estado:** PDF-0 a PDF-4 implementadas tecnicamente em desenvolvimento/teste; portão local PDF-4 aprovado com dados sintéticos, migration, 148 testes, Chromium, Ruff e `alembic check` em 25/09/2026; uso real do novo fluxo e publicação ainda bloqueados
 **Substitui:** o caminho de atribuição automática da etapa 11 do `PLANO_EXECUCAO_CODEX.md`  
 **Preserva:** fundação, API oficial GET-only, banco, relatórios, portal, worker e controles das etapas 0 a 10
 
@@ -43,19 +43,19 @@ O PDF de origem é um **documento de entrada privado** e uma prova da composiç�
 5. A primeira versão aceita somente PDF com camada de texto. PDF escaneado é recusado com orientação clara; OCR fica fora do escopo até decisão específica de privacidade e precisão.
 6. Upload aceita apenas PDF real validado por assinatura, tamanho, páginas e limites definidos; extensão de arquivo não é prova suficiente.
 7. O documento recebe SHA-256, versão do parser, usuário, parceiro, período, horários e estado de processamento. Reenvio idêntico é detectado.
-8. O PDF fica em storage privado. O filesystem da Vercel não é armazenamento persistente. Em desenvolvimento, qualquer storage local deve recusar produção.
+8. O PDF fica em volume privado persistente na VPS, fora da camada do contêiner e sem exposição direta pelo proxy. A implementação local atual deve recusar produção até o adaptador e os controles da VPS serem homologados em PDF-8.
 9. A integração Advbox permanece GET-only e usa exclusivamente endpoints oficiais já confirmados. As rotas internas sem autorização não serão implementadas.
 10. A visão externa mantém allowlist estrita. Contatos, CPF/CNPJ completo, dados de saúde, credenciais, observações, textos livres e o PDF-fonte são bloqueados por padrão.
 11. Publicação exige lote reconciliado, zero ambiguidade não resolvida, regras de conteúdo aprovadas e revisão registrada.
 12. Dados reais não serão copiados para código, testes, documentação, logs, screenshots versionadas ou artefatos de demonstração.
 13. O PDF anotado pelo escritório é evidência de requisitos, não arquivo de importação nem fixture. Destaques amarelos não participam do parser.
-14. As prioridades candidatas são: parte/cliente, tipo de ação/benefício, fase, financeiro detalhado e andamento manual recente. Elas devem vir da API oficial e continuam sujeitas à matriz interna/externa, P-006/P-007/P-023 e controle de acesso.
+14. As prioridades candidatas são: parte/cliente, tipo de ação/benefício, fase, financeiro detalhado e andamento manual recente. O ADR-004 aprovou para o MVP somente o subconjunto interno minimizado; financeiro calculado, texto livre, status jurídico e visão externa permanecem fora do escopo.
 
 ### 2.1 Prioridades operacionais recebidas do escritório
 
 O documento `docs/PRIORIDADES_CONTEUDO_ESCRITORIO.md` registra de forma sanitizada as categorias marcadas no PDF de 55 páginas e as perguntas ainda necessárias. A marcação confirma relevância operacional, mas não resolve fonte, fórmula, semântica ou autorização de publicação.
 
-- parte/cliente: candidato à visão interna restrita; nome nunca é chave e segue bloqueado externamente até P-007/P-023;
+- parte/cliente: visão interna restrita; nome nunca é chave e permanece bloqueado externamente pelo ADR-004;
 - tipo de ação/benefício: usar catálogo/IDs oficiais, sem extrair o rótulo do PDF como fonte final;
 - fase: tratar como fase operacional, distinta de status jurídico;
 - financeiro: avaliar lançamentos estruturados, `is_internal`, regras de sinal/totalização/rateio e visibilidade por papel;
@@ -89,7 +89,7 @@ O adaptador de rotas internas do Advbox deixa de ser necessário. A fonte do ví
 | PDF-5 | Regras de conteúdo e minimização | Matriz interna/externa das prioridades do escritório e indicadores aprovados; texto livre bloqueado |
 | PDF-6 | Relatório e versionamento ponta a ponta | Lote aprovado gera HTML/PDF e versão reproduzível |
 | PDF-7 | Homologação privada com arquivos reais | Cenários reais passam sem vazamento e divergências ficam explicadas |
-| PDF-8 | Infraestrutura e implantação | Banco, objetos, jobs, identidade, backups e plano Vercel adequados validados |
+| PDF-8 | Infraestrutura e implantação | VPS, volumes privados, jobs, identidade, HTTPS, firewall e backups validados |
 | PDF-9 | Go-live assistido | Primeiro ciclo produtivo aprovado, monitorado e reversível |
 
 Execute sempre um prompt por vez. Não avance automaticamente, mesmo quando os testes passarem.
@@ -315,23 +315,26 @@ Produza docs/HOMOLOGACAO_IMPORTACAO_PDF.md apenas com métricas agregadas, códi
 ```text
 Leia o inventário de hospedagem, plano PDF, status, runbook, modelo de ameaças e homologação. Consulte documentação oficial atual dos provedores antes de qualquer decisão que possa ter mudado.
 
-Objetivo: implantar o fluxo homologado em infraestrutura profissional, privada e recuperável.
+Objetivo: implantar o fluxo homologado em uma única VPS Linux, privada e recuperável, conforme ADR-003.
 
 Portões obrigatórios antes do deploy:
 
-- Vercel Pro ou plano contratualmente adequado ao uso empresarial;
-- PostgreSQL externo com SSL, pool, extensão necessária, backup e restauração testada;
-- storage privado de objetos para fontes e relatórios, com buckets/prefixos e permissões separados;
-- executor de jobs compatível com duração, concorrência e retentativas;
+- VPS cujo contrato permita uso profissional, com Linux x86_64, Docker e capacidade validada para PostgreSQL e Chromium;
+- Docker Compose de produção sem bind mount do código, com imagens versionadas e processos sem privilégio;
+- PostgreSQL acessível somente pela rede interna do Compose, em volume persistente privado;
+- volumes persistentes separados para fontes e relatórios, sem exposição direta pelo proxy;
+- worker no mesmo host, com concorrência limitada, retomada e processamento manual no MVP;
+- proxy reverso com HTTPS, firewall e somente as portas indispensáveis expostas;
 - segredos em cofre/variáveis protegidas;
 - identidade, papéis, MFA/SSO ou decisão formal equivalente;
+- backup criptografado do banco e dos objetos para destino fora da VPS, com restauração testada;
 - retenção do PDF-fonte, relatórios, auditoria e backups aprovada;
 - logs, alertas, domínio e responsável operacional definidos.
 
-Implemente adaptadores produtivos e configuração sem segredos no repositório. Valide upload, download autorizado, isolamento de parceiro, migração, job, rollback, expiração/remoção conforme política e restauração em ambiente separado. Faça primeiro staging com dados sintéticos; depois use dados reais somente com autorização específica. Configure domínio apenas após o staging aprovado. Atualize documentação/status e pare antes do go-live.
+Implemente a composição e os adaptadores produtivos sem segredos no repositório. Valide upload, download autorizado, isolamento de parceiro, migração, job, rollback, expiração/remoção conforme política e restauração em ambiente separado. Faça primeiro staging com dados sintéticos; depois use dados reais somente com autorização específica. Configure domínio apenas após o staging aprovado. Atualize documentação/status e pare antes do go-live.
 ```
 
-**Critério de aceite:** staging funciona sem filesystem persistente da Vercel, backups/restauração e isolamento são comprovados e não há bloqueio contratual conhecido.
+**Critério de aceite:** staging funciona na VPS com volumes persistentes privados, HTTPS, firewall, backup/restauração e isolamento comprovados, sem bloqueio contratual conhecido.
 
 ---
 
@@ -367,9 +370,9 @@ Não amplie para toda a carteira enquanto o primeiro ciclo não for aceito. Em q
 | Periodicidade e filtros da exportação | PDF-7 | Importação manual sem promessa de atualização automática |
 | Campos da visão externa | PDF-5 | Visão externa não publicável |
 | Fórmulas e regras financeiras | PDF-5 | `pending_validation`; omitir valores |
-| Semântica e visibilidade das cinco prioridades do escritório (P-023) | PDF-5 | Campos `restricted`/`pending_validation`; nenhuma publicação |
+| Evolução das prioridades além do escopo do ADR-004 | Após o MVP | Campos `restricted`/`pending_validation`; nenhuma exposição automática |
 | Tratamento de item sem número e pasta não única | PDF-3 | `needs_review`; nunca associar automaticamente |
-| Plano Vercel, banco, storage e jobs | PDF-8 | Operação exclusivamente local e sintética |
+| VPS, volumes, proxy, backup e jobs | PDF-8 | Operação exclusivamente local e sintética |
 
 ## 6. Definição de sucesso do projeto revisado
 

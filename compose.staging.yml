@@ -1,0 +1,19 @@
+services:
+  proxy:
+    environment:
+      SITE_ADDRESS: https://localhost:8443
+    ports: !override
+      - "8443:8443"
+    volumes: !override
+      - ./deploy/Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+  backup:
+    environment:
+      RESTIC_REPOSITORY: /backup/repository
+    volumes:
+      - ${RESTIC_TEST_REPOSITORY_DIR:?Defina RESTIC_TEST_REPOSITORY_DIR}:/backup
+  restore-test:
+    environment:
+      RESTIC_REPOSITORY: /backup/repository
+    volumes:
+      - ${RESTIC_TEST_REPOSITORY_DIR:?Defina RESTIC_TEST_REPOSITORY_DIR}:/backup:ro

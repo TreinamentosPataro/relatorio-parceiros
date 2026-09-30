@@ -18,6 +18,8 @@ class PdfStorageUnavailable(RuntimeError):
 class PrivatePdfStorage(Protocol):
     def put(self, object_key: str, content: bytes) -> None: ...
 
+    def get(self, object_key: str) -> bytes: ...
+
     def delete(self, object_key: str) -> None: ...
 
 
@@ -73,3 +75,35 @@ class LocalPrivatePdfStorage:
             target.unlink(missing_ok=True)
         except OSError as exc:
             raise PdfStorageUnavailable("falha na limpeza do storage privado") from exc
+
+    def get(self, object_key: str) -> bytes:
+        self._require_local()
+        target = self._target(object_key)
+        try:
+            with target.open("rb") as stream:
+                content = stream.read(20 * 1024 * 1024 + 1)
+            if len(content) > 20 * 1024 * 1024:
+                raise PdfStorageUnavailable("objeto excede o limite")
+            return content
+        except OSError as exc:
+            raise PdfStorageUnavailable("falha na leitura do storage privado") from exc
+
+
+class PersistentPrivatePdfStorage(LocalPrivatePdfStorage):
+    """Filesystem-backed storage for a private persistent deployment volume."""
+
+    def __init__(self, root: Path, environment: AppEnvironment):
+        if environment not in (AppEnvironment.STAGING, AppEnvironment.PRODUCTION):
+            raise PdfStorageUnavailable("storage persistente exige ambiente implantado")
+        super().__init__(root, environment)
+
+    def _require_local(self) -> None:
+        return
+
+
+def build_pdf_storage(root: Path, environment: AppEnvironment) -> PrivatePdfStorage:
+    """Select the explicitly scoped storage adapter for the environment."""
+
+    if environment in (AppEnvironment.STAGING, AppEnvironment.PRODUCTION):
+        return PersistentPrivatePdfStorage(root, environment)
+    return LocalPrivatePdfStorage(root, environment)

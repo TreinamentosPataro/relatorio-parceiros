@@ -1,14 +1,13 @@
 """Seed only named synthetic portal rows linked to already generated previews."""
 
 from datetime import UTC, date, datetime
-from pathlib import Path
 
 from sqlalchemy import select
 
-from partner_reports.config import AppEnvironment, get_settings
+from partner_reports.config import get_settings
 from partner_reports.persistence.database import get_session_factory
 from partner_reports.persistence.models import Partner, ReportVersion, SyntheticPortfolio
-from partner_reports.web.artifacts import SyntheticArtifactStore
+from partner_reports.web.artifacts import build_artifact_store
 
 _DEMO = (
     ("SYNTHETIC-ZERO", "Parceiro Exemplo · Carteira vazia", "synthetic/zero"),
@@ -20,9 +19,9 @@ _DEMO = (
 
 def main() -> None:
     settings = get_settings()
-    if settings.app_env is not AppEnvironment.DEVELOPMENT:
-        raise SystemExit("Seed sintético permitido apenas em desenvolvimento")
-    store = SyntheticArtifactStore(Path("output"), settings.app_env)
+    if not settings.synthetic_validation_only:
+        raise SystemExit("Seed sintético exige escopo synthetic_only")
+    store = build_artifact_store(settings.report_storage_root, settings.app_env)
     for _, _, key in _DEMO:
         if key:
             store.read(key, "html")

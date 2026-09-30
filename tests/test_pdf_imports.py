@@ -8,7 +8,12 @@ from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject
 
 from partner_reports.config import AppEnvironment
 from partner_reports.pdf_imports.lifecycle import PdfBatchState, require_transition
-from partner_reports.pdf_imports.storage import LocalPrivatePdfStorage, PdfStorageUnavailable
+from partner_reports.pdf_imports.storage import (
+    LocalPrivatePdfStorage,
+    PdfStorageUnavailable,
+    PersistentPrivatePdfStorage,
+    build_pdf_storage,
+)
 from partner_reports.pdf_imports.validation import (
     MAX_PDF_BYTES,
     MAX_PDF_PAGES,
@@ -100,11 +105,24 @@ def test_local_storage_is_atomic_private_and_refused_in_production(tmp_path) -> 
     storage = LocalPrivatePdfStorage(tmp_path, AppEnvironment.TEST)
     storage.put(key, b"synthetic")
     assert (tmp_path / key).read_bytes() == b"synthetic"
+    assert storage.get(key) == b"synthetic"
     storage.delete(key)
     assert not (tmp_path / key).exists()
     production = LocalPrivatePdfStorage(tmp_path, AppEnvironment.PRODUCTION)
     with pytest.raises(PdfStorageUnavailable):
         production.put(key, b"synthetic")
+    with pytest.raises(PdfStorageUnavailable):
+        production.get(key)
+
+
+def test_persistent_storage_is_explicitly_selected_for_deployments(tmp_path) -> None:
+    key = "pdf-source/0123456789abcdef0123456789abcdef.pdf"
+    storage = build_pdf_storage(tmp_path, AppEnvironment.STAGING)
+    assert isinstance(storage, PersistentPrivatePdfStorage)
+    storage.put(key, b"synthetic")
+    assert storage.get(key) == b"synthetic"
+    with pytest.raises(PdfStorageUnavailable):
+        PersistentPrivatePdfStorage(tmp_path, AppEnvironment.DEVELOPMENT)
 
 
 def test_lifecycle_accepts_only_contract_transitions() -> None:
