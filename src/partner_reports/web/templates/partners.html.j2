@@ -14,7 +14,7 @@
     </div>
   </header>
   <main class="container" id="main">
-    <div class="page-heading"><div><p class="eyebrow">Visão geral</p><h1>Parceiros</h1><p class="muted">Encontre a carteira e consulte a versão disponível de cada relatório.</p>{% if is_admin %}<p><a class="button button-primary" href="/portal/imports/new">Enviar PDF da carteira</a></p>{% endif %}</div><div class="count-card"><span class="count-number">{{ total }}</span><span>parceiro{{ 's' if total != 1 else '' }} encontrado{{ 's' if total != 1 else '' }}</span></div></div>
+    <div class="page-heading"><div><p class="eyebrow">Visão geral</p><h1>Parceiros</h1><p class="muted">Encontre a carteira e consulte a versão disponível de cada relatório.</p>{% if is_admin %}<p class="action-group"><a class="button button-primary" href="/portal/imports/new">Enviar PDF da carteira</a>{% if not demo %}<a class="button button-secondary" href="/portal/admin/partners">Gerenciar parceiros</a>{% endif %}</p>{% endif %}</div><div class="count-card"><span class="count-number">{{ total }}</span><span>parceiro{{ 's' if total != 1 else '' }} encontrado{{ 's' if total != 1 else '' }}</span></div></div>
     {% if demo %}<div class="notice" role="status"><strong>Ambiente de prévia sintética.</strong> Nenhum dado real ou relatório externo está publicado.</div>{% endif %}
     <section class="panel filters" aria-label="Busca e filtros">
       <form method="get" action="/portal/partners" class="filter-form">

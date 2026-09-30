@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gerenciar parceiros · Plataforma interna</title>
+  <link rel="stylesheet" href="/portal/assets.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Ir para o conteúdo</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/portal/partners"><span class="brand-mark" aria-hidden="true">P</span><span>Relatórios<span class="brand-sub">/ Parceiros</span></span></a>
+      <div class="header-actions"><span class="user-label">{{ user.display_name or 'Usuário interno' }}</span><form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">Sair</button></form></div>
+    </div>
+  </header>
+  <main class="container" id="main">
+    <a class="back-link" href="/portal/partners"><span aria-hidden="true">←</span> Voltar aos parceiros</a>
+    <div class="page-heading detail-heading"><div><p class="eyebrow">Administração</p><h1>Gerenciar parceiros</h1><p class="muted">Cadastre parceiros e libere cada um para o piloto quando o PDF da carteira estiver pronto para envio.</p></div><div class="count-card"><span class="count-number">{{ enabled }}</span><span>liberado{{ 's' if enabled != 1 else '' }} de {{ partners|length }}</span></div></div>
+    <div class="notice" role="status"><strong>Somente parceiros liberados</strong> aparecem na lista, no envio de PDF, na revisão e na geração de relatórios. Suspender um parceiro retira o acesso sem apagar lotes ou versões.</div>
+    <section class="panel filters" aria-label="Cadastrar parceiro">
+      <form method="post" action="/portal/admin/partners" class="filter-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div class="field field-search"><label for="name">Nome do parceiro (uso interno)</label><input id="name" name="name" required minlength="2" maxlength="{{ max_name }}" autocomplete="off"></div>
+        <button class="button button-primary" type="submit">Cadastrar</button>
+      </form>
+      {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    </section>
+    <div class="section-heading"><div><p class="eyebrow">Piloto</p><h2>Parceiros cadastrados</h2></div><p class="sync-meta">O código técnico é gerado pelo sistema e não identifica o parceiro fora do portal.</p></div>
+    <section class="panel list-panel" aria-label="Parceiros cadastrados">
+      {% if partners %}<div class="table-wrap"><table><thead><tr><th scope="col">Parceiro</th><th scope="col">Código</th><th scope="col">Piloto</th><th scope="col">Ação</th></tr></thead><tbody>
+      {% for partner in partners %}<tr><td data-label="Parceiro">{{ partner.name }}</td><td data-label="Código" class="mono">{{ partner.external_id }}</td><td data-label="Piloto"><span class="status-pill">{{ 'liberado' if partner.pilot_enabled else 'suspenso' }}</span></td><td data-label="Ação"><form method="post" action="/portal/admin/partners/{{ partner.id }}/pilot/{{ 'disable' if partner.pilot_enabled else 'enable' }}" class="review-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label><input type="checkbox" name="confirm" value="yes" required> Confirmo</label><button class="button {{ 'button-secondary' if partner.pilot_enabled else 'button-primary' }}" type="submit">{{ 'Suspender' if partner.pilot_enabled else 'Liberar' }}</button></form></td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<div class="empty-state"><span aria-hidden="true">＋</span><h3>Nenhum parceiro cadastrado</h3><p>Use o formulário acima para cadastrar o primeiro.</p></div>{% endif %}
+    </section>
+    <p class="pagination"></p>
+  </main>
+  <footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
+</body>
+</html>

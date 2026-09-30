@@ -20,6 +20,7 @@ from partner_reports.domain.report_view import (
     SnapshotMovement,
     build_internal_report,
 )
+from partner_reports.partner_scope import partner_in_scope
 from partner_reports.persistence.models import (
     Customer,
     Lawsuit,
@@ -93,19 +94,18 @@ def load_batch_report(
     if batch is None or batch.state != "approved" or batch.parser_version is None:
         raise BatchReportUnavailable("lote não aprovado")
     partner = db.execute(
-        select(Partner.id, Partner.external_id, Partner.status, Partner.deleted_at).where(
-            Partner.id == batch.partner_id
-        )
+        select(
+            Partner.id,
+            Partner.external_id,
+            Partner.status,
+            Partner.deleted_at,
+            Partner.pilot_enabled,
+        ).where(Partner.id == batch.partner_id)
     ).one_or_none()
     source = db.get(PdfSourceDocument, batch.source_document_id)
-    partner_in_scope = (
-        settings.partner_is_in_data_scope(partner.external_id)
-        if settings is not None and partner is not None
-        else partner is not None and partner.external_id.startswith("SYNTHETIC-")
-    )
     if (
         partner is None
-        or not partner_in_scope
+        or not partner_in_scope(settings, partner)
         or partner.status != "active"
         or partner.deleted_at is not None
         or source is None

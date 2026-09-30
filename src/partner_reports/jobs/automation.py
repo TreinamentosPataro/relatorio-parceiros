@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from partner_reports.config import AppEnvironment, PdfDataScope, Settings
+from partner_reports.partner_scope import partner_scope_clause
 from partner_reports.persistence.models import (
     Partner,
     PdfImportBatch,
@@ -152,18 +153,12 @@ def scheduled_key(now: datetime | None = None) -> str:
     return f"daily-{(now or datetime.now(UTC)).astimezone(_ZONE):%Y-%m-%d}"
 
 
-def _report_scope_clause(settings: Settings | None):
-    if settings is None or settings.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
-        return Partner.external_id.startswith("SYNTHETIC-")
-    return Partner.external_id.in_(settings.pilot_partner_ids)
-
-
 def _recover(db: Session, now: datetime, settings: Settings | None = None) -> None:
     abandoned = db.scalars(
         select(ReportGenerationRequest)
         .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
         .where(
-            _report_scope_clause(settings),
+            partner_scope_clause(settings),
             ReportGenerationRequest.status == "running",
             ReportGenerationRequest.lease_expires_at < now,
         )
@@ -197,7 +192,7 @@ def claim(
                 ReportGenerationRequest.status == "pending",
                 (ReportGenerationRequest.available_at.is_(None))
                 | (ReportGenerationRequest.available_at <= now),
-                _report_scope_clause(settings),
+                partner_scope_clause(settings),
             )
             .order_by(ReportGenerationRequest.created_at, ReportGenerationRequest.id)
             .with_for_update(skip_locked=True)
@@ -423,7 +418,7 @@ def retry_failed(
             .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
             .where(
                 ReportGenerationRequest.status == "failed",
-                _report_scope_clause(settings),
+                partner_scope_clause(settings),
             )
             .with_for_update(skip_locked=True)
         ).all()
@@ -460,7 +455,7 @@ def status(
         counts = db.execute(
             select(ReportGenerationRequest.status, func.count())
             .join(Partner, Partner.id == ReportGenerationRequest.partner_id)
-            .where(_report_scope_clause(settings))
+            .where(partner_scope_clause(settings))
             .group_by(ReportGenerationRequest.status)
         ).all()
         return {name: count for name, count in counts}

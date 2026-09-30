@@ -1,6 +1,5 @@
 """Typed application configuration loaded exclusively from the environment."""
 
-import re
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -35,6 +34,8 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
+        # Validation errors reach container logs; never echo raw values such as DATABASE_URL.
+        hide_input_in_errors=True,
     )
 
     app_env: AppEnvironment
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     pdf_four_eyes: bool = True
     pdf_synthetic_corrections: bool = False
     pdf_data_scope: PdfDataScope = PdfDataScope.SYNTHETIC_ONLY
+    # Retired allowlist, kept only so a stale value fails closed instead of being ignored.
     pdf_pilot_partner_ids: SecretStr = SecretStr("")
 
     @field_validator("database_url")
@@ -59,25 +61,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_data_scope(self) -> "Settings":
-        """Keep real-data admission explicit, allowlisted and fail-closed."""
+        """Keep real-data admission explicit and fail-closed.
 
-        raw = self.pdf_pilot_partner_ids.get_secret_value()
-        entries = raw.split(",") if raw else []
-        if any(entry != entry.strip() or not entry for entry in entries):
-            raise ValueError("PDF_PILOT_PARTNER_IDS deve usar IDs opacos separados por vírgula")
-        if any(
-            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", entry) is None for entry in entries
+        Real partners are admitted one by one through an audited flag in the database;
+        the retired environment allowlist must not linger silently in a deployment.
+        """
+
+        if self.pdf_pilot_partner_ids.get_secret_value():
+            raise ValueError(
+                "PDF_PILOT_PARTNER_IDS foi removida; libere cada parceiro no portal administrativo"
+            )
+        if self.pdf_data_scope is PdfDataScope.PRIVATE_PILOT and self.app_env not in (
+            AppEnvironment.TEST,
+            AppEnvironment.PRODUCTION,
         ):
-            raise ValueError("PDF_PILOT_PARTNER_IDS contém identificador inválido")
-        if len(entries) != len(set(entries)):
-            raise ValueError("PDF_PILOT_PARTNER_IDS contém identificador repetido")
-        if self.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY and entries:
-            raise ValueError("allowlist real exige PDF_DATA_SCOPE=private_pilot")
-        if self.pdf_data_scope is PdfDataScope.PRIVATE_PILOT:
-            if self.app_env not in (AppEnvironment.TEST, AppEnvironment.PRODUCTION):
-                raise ValueError("private_pilot exige ambiente test ou production")
-            if not entries:
-                raise ValueError("private_pilot exige PDF_PILOT_PARTNER_IDS")
+            raise ValueError("private_pilot exige ambiente test ou production")
         return self
 
     @property
@@ -97,20 +95,6 @@ class Settings(BaseSettings):
         """Return the fail-closed data scope supported by this release."""
 
         return self.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY
-
-    @property
-    def pilot_partner_ids(self) -> frozenset[str]:
-        """Return the opaque private-pilot allowlist without logging its source."""
-
-        raw = self.pdf_pilot_partner_ids.get_secret_value()
-        return frozenset(raw.split(",")) if raw else frozenset()
-
-    def partner_is_in_data_scope(self, external_id: str) -> bool:
-        """Authorize one partner identifier for the configured data scope."""
-
-        if self.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
-            return external_id.startswith("SYNTHETIC-")
-        return external_id in self.pilot_partner_ids
 
 
 @lru_cache

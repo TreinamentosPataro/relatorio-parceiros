@@ -8,8 +8,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from partner_reports.config import PdfDataScope, Settings
+from partner_reports.config import Settings
 from partner_reports.integrations.advbox.client import AdvboxAuditError, AdvboxClient
+from partner_reports.partner_scope import partner_scope_clause
 from partner_reports.pdf_imports.processing import parse_quarantined_batch
 from partner_reports.pdf_imports.reconciliation import collect_verified_snapshot
 from partner_reports.pdf_imports.reconciliation_service import persist_scoped_reconciliation
@@ -20,18 +21,12 @@ _LEASE = timedelta(minutes=5)
 _MAX_ATTEMPTS = 3
 
 
-def _scope_clause(settings: Settings):
-    if settings.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
-        return Partner.external_id.startswith("SYNTHETIC-")
-    return Partner.external_id.in_(settings.pilot_partner_ids)
-
-
 def _recover_expired(db: Session, settings: Settings, now: datetime) -> None:
     rows = db.scalars(
         select(PdfImportBatch)
         .join(Partner, Partner.id == PdfImportBatch.partner_id)
         .where(
-            _scope_clause(settings),
+            partner_scope_clause(settings),
             PdfImportBatch.processing_status == "running",
             PdfImportBatch.processing_lease_expires_at < now,
         )
@@ -62,7 +57,7 @@ def claim_pdf_import(
             select(PdfImportBatch)
             .join(Partner, Partner.id == PdfImportBatch.partner_id)
             .where(
-                _scope_clause(settings),
+                partner_scope_clause(settings),
                 Partner.status == "active",
                 Partner.deleted_at.is_(None),
                 PdfImportBatch.processing_status == "pending",
@@ -226,7 +221,7 @@ def retry_failed_pdf_imports(sessions: sessionmaker[Session], settings: Settings
         batches = db.scalars(
             select(PdfImportBatch)
             .join(Partner, Partner.id == PdfImportBatch.partner_id)
-            .where(_scope_clause(settings), PdfImportBatch.processing_status == "failed")
+            .where(partner_scope_clause(settings), PdfImportBatch.processing_status == "failed")
             .with_for_update(skip_locked=True)
         ).all()
         for batch in batches:
@@ -245,7 +240,7 @@ def pdf_import_status(sessions: sessionmaker[Session], settings: Settings) -> di
         rows = db.execute(
             select(PdfImportBatch.processing_status, func.count())
             .join(Partner, Partner.id == PdfImportBatch.partner_id)
-            .where(_scope_clause(settings))
+            .where(partner_scope_clause(settings))
             .group_by(PdfImportBatch.processing_status)
         ).all()
         return {name: count for name, count in rows}

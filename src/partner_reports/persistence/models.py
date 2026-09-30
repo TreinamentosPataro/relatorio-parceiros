@@ -47,6 +47,9 @@ class Partner(UuidPrimaryKeyMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(250), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pilot_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
 
 class Customer(UuidPrimaryKeyMixin, TimestampMixin, Base):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from partner_reports.config import AppEnvironment, Settings
 from partner_reports.integrations.advbox.client import AdvboxClient
+from partner_reports.partner_scope import partner_in_scope
 from partner_reports.pdf_imports.lifecycle import PdfBatchState, require_transition
 from partner_reports.pdf_imports.parser import ManifestItem
 from partner_reports.pdf_imports.reconciliation import (
@@ -294,7 +295,7 @@ def persist_scoped_reconciliation(
 
     batch = db.get(PdfImportBatch, batch_id)
     partner = db.get(Partner, batch.partner_id) if batch is not None else None
-    if partner is None or not settings.partner_is_in_data_scope(partner.external_id):
+    if not partner_in_scope(settings, partner):
         raise ValueError("parceiro fora do escopo de dados")
     return _persist_reconciliation(db, batch_id, snapshot, persist_minimal_snapshot=True)
 

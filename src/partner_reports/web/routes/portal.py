@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import secrets
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
@@ -18,8 +19,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from partner_reports.config import PdfDataScope, Settings
+from partner_reports.config import Settings
 from partner_reports.jobs.pdf_batch_reports import enqueue_approved_batch
+from partner_reports.partner_scope import SYNTHETIC_PREFIX, partner_in_scope, partner_scope_clause
 from partner_reports.pdf_imports.reporting import BatchReportUnavailable
 from partner_reports.pdf_imports.review_service import (
     ReviewConflict,
@@ -87,6 +89,7 @@ _TEMPLATES = Environment(
 )
 _ASSETS = files("partner_reports.web")
 _PAGE_SIZE = 10
+_PARTNER_NAME_MAX = 120
 _VERSION_LABELS = {
     "draft": "Rascunho",
     "validated": "Validado",
@@ -236,19 +239,13 @@ def _status(
     return "atualizado"
 
 
-def _partner_scope_clause(settings: Settings):
-    if settings.pdf_data_scope is PdfDataScope.SYNTHETIC_ONLY:
-        return Partner.external_id.startswith("SYNTHETIC-")
-    return Partner.external_id.in_(settings.pilot_partner_ids)
-
-
 def _catalog(db: Session, query: str, status: str, settings: Settings) -> list[dict]:
     partners = db.scalars(
         select(Partner)
         .where(
             Partner.status == "active",
             Partner.deleted_at.is_(None),
-            _partner_scope_clause(settings),
+            partner_scope_clause(settings),
         )
         .order_by(Partner.name, Partner.external_id)
     ).all()
@@ -282,7 +279,7 @@ def _require_partner(db: Session, partner_id: uuid.UUID, settings: Settings) -> 
         partner is None
         or partner.status != "active"
         or partner.deleted_at is not None
-        or not settings.partner_is_in_data_scope(partner.external_id)
+        or not partner_in_scope(settings, partner)
     ):
         raise HTTPException(status_code=404, detail="Parceiro não encontrado")
     return partner
@@ -299,7 +296,7 @@ def _active_partners(db: Session, settings: Settings) -> list[Partner]:
         .where(
             Partner.status == "active",
             Partner.deleted_at.is_(None),
-            _partner_scope_clause(settings),
+            partner_scope_clause(settings),
         )
         .order_by(Partner.name, Partner.external_id)
     ).all()
@@ -615,7 +612,7 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
             partner is None
             or partner.status != "active"
             or partner.deleted_at is not None
-            or not request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+            or not partner_in_scope(request.app.state.settings, partner)
         ):
             raise ValueError
     except (KeyError, ValueError):
@@ -781,7 +778,7 @@ def pdf_import_list(
     query = (
         select(PdfImportBatch, Partner)
         .join(Partner, Partner.id == PdfImportBatch.partner_id)
-        .where(_partner_scope_clause(request.app.state.settings))
+        .where(partner_scope_clause(request.app.state.settings))
     )
     if partner_id:
         query = query.where(PdfImportBatch.partner_id == partner_id)
@@ -834,7 +831,7 @@ def pdf_import_detail(
         .join(Partner, Partner.id == PdfImportBatch.partner_id)
         .where(
             PdfImportBatch.id == batch_id,
-            _partner_scope_clause(request.app.state.settings),
+            partner_scope_clause(request.app.state.settings),
         )
     ).one_or_none()
     if row is None:
@@ -875,7 +872,7 @@ def pdf_import_detail(
             .limit(500)
         ).all()
         if request.app.state.settings.pdf_synthetic_corrections
-        and request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+        and partner_in_scope(request.app.state.settings, partner)
         else []
     )
     corrected_ids = {
@@ -923,8 +920,7 @@ def pdf_import_detail(
         approval_blocked=approval_blocked,
         pending_reprocess=pending_reprocess,
         synthetic_generation=(
-            batch.state == "approved"
-            and request.app.state.settings.partner_is_in_data_scope(partner.external_id)
+            batch.state == "approved" and partner_in_scope(request.app.state.settings, partner)
         ),
     )
 
@@ -1062,6 +1058,126 @@ async def generate_from_pdf_batch(
         db.rollback()
         raise HTTPException(status_code=409, detail="Geração indisponível para este lote") from exc
     return RedirectResponse(f"/portal/imports/{batch_id}", status_code=303)
+
+
+def _require_partner_admin(db: Session, request: Request) -> tuple[PortalSession, AppUser]:
+    # Real partners exist only in the private pilot; synthetic runtimes never register them.
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    if request.app.state.settings.synthetic_validation_only:
+        raise HTTPException(status_code=404, detail="Página não encontrada")
+    return record, user
+
+
+def _partner_admin_page(
+    db: Session,
+    user: AppUser,
+    csrf: str,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    partners = db.scalars(
+        select(Partner)
+        .where(
+            Partner.deleted_at.is_(None),
+            ~Partner.external_id.startswith(SYNTHETIC_PREFIX),
+            Partner.status == "active",
+        )
+        .order_by(Partner.name, Partner.external_id)
+    ).all()
+    response = _render(
+        "partner_admin.html.j2",
+        user=user,
+        csrf=csrf,
+        partners=partners,
+        enabled=sum(1 for partner in partners if partner.pilot_enabled),
+        error=error,
+        max_name=_PARTNER_NAME_MAX,
+    )
+    response.status_code = status_code
+    return response
+
+
+def _partner_name(raw: str) -> str:
+    name = " ".join(raw.split())
+    if not 2 <= len(name) <= _PARTNER_NAME_MAX or not name.isprintable():
+        raise ValueError
+    return name
+
+
+@router.get("/portal/admin/partners")
+def partner_admin(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _require_partner_admin(db, request)
+    return _partner_admin_page(db, user, record.csrf_token)
+
+
+@router.post("/portal/admin/partners")
+async def create_partner(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _require_partner_admin(db, request)
+    form = await _form(request)
+    _csrf(form, record)
+    try:
+        name = _partner_name(form.get("name", ""))
+    except ValueError:
+        return _partner_admin_page(
+            db,
+            user,
+            record.csrf_token,
+            error=f"Informe um nome com 2 a {_PARTNER_NAME_MAX} caracteres.",
+            status_code=400,
+        )
+    # Opaque technical code: never derived from the name or any Advbox identifier.
+    partner = Partner(
+        external_id=f"PRT-{secrets.token_hex(5).upper()}",
+        name=name,
+        status="active",
+        pilot_enabled=False,
+    )
+    db.add(partner)
+    db.flush()
+    _audit_commit(
+        db,
+        request,
+        "partner_created",
+        actor_user_id=user.id,
+        entity_type="partner",
+        entity_id=partner.id,
+    )
+    return RedirectResponse("/portal/admin/partners", status_code=303)
+
+
+@router.post("/portal/admin/partners/{partner_id}/pilot/{action}")
+async def set_partner_pilot(
+    partner_id: uuid.UUID, action: str, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    record, user = _require_partner_admin(db, request)
+    form = await _form(request)
+    _csrf(form, record)
+    if form.get("confirm") != "yes" or action not in {"enable", "disable"}:
+        raise HTTPException(status_code=400, detail="Confirmação necessária")
+    partner = db.get(Partner, partner_id, with_for_update=True)
+    if (
+        partner is None
+        or partner.deleted_at is not None
+        or partner.status != "active"
+        or partner.external_id.startswith(SYNTHETIC_PREFIX)
+    ):
+        raise HTTPException(status_code=404, detail="Parceiro não encontrado")
+    enabled = action == "enable"
+    if partner.pilot_enabled != enabled:
+        partner.pilot_enabled = enabled
+        _audit_commit(
+            db,
+            request,
+            "partner_pilot_enabled" if enabled else "partner_pilot_disabled",
+            actor_user_id=user.id,
+            entity_type="partner",
+            entity_id=partner.id,
+        )
+    else:
+        db.rollback()
+    return RedirectResponse("/portal/admin/partners", status_code=303)
 
 
 @router.post("/portal/partners/{partner_id}/open")

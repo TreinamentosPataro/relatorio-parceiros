@@ -36,6 +36,9 @@ _ACTIONS = frozenset(
         "pdf_review_corrected",
         "pdf_review_reprocess_requested",
         "pdf_review_superseded",
+        "partner_created",
+        "partner_pilot_enabled",
+        "partner_pilot_disabled",
     }
 )
 _ENTITIES = frozenset({"none", "user", "partner", "report_version", "pdf_import_batch"})

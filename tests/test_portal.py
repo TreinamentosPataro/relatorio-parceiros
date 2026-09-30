@@ -155,17 +155,17 @@ def test_login_catalog_search_and_detail(portal) -> None:
     assert "Regenerar apenas este parceiro" not in detail.text
 
 
-def test_private_pilot_scope_uses_exact_allowlist(portal, db_session: Session) -> None:
+def test_private_pilot_scope_uses_database_flag(portal, db_session: Session) -> None:
     client, synthetic_partner, _, _ = portal
-    allowed = Partner(external_id="PILOT-001", name="Parceiro piloto permitido")
+    allowed = Partner(external_id="PILOT-001", name="Parceiro piloto permitido", pilot_enabled=True)
     blocked = Partner(external_id="PILOT-002", name="Parceiro piloto bloqueado")
+    synthetic_partner.pilot_enabled = True
     db_session.add_all([allowed, blocked])
     db_session.flush()
     client.app.state.settings = Settings(
         app_env="test",
         database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
         pdf_data_scope="private_pilot",
-        pdf_pilot_partner_ids="PILOT-001",
         _env_file=None,
     )
 
@@ -184,6 +184,134 @@ def test_private_pilot_scope_uses_exact_allowlist(portal, db_session: Session) -
     assert allowed.name in upload.text
     assert blocked.name not in upload.text
     assert synthetic_partner.name not in upload.text
+
+
+def _pilot_settings() -> Settings:
+    return Settings(
+        app_env="test",
+        database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
+        pdf_data_scope="private_pilot",
+        _env_file=None,
+    )
+
+
+def _partner_audit(db_session: Session, action: str, partner_id: uuid.UUID) -> int:
+    return db_session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(
+            AuditEvent.action == action,
+            AuditEvent.entity_type == "partner",
+            AuditEvent.entity_id == partner_id,
+        )
+    )
+
+
+def test_admin_registers_and_releases_partner_gradually(portal, db_session: Session) -> None:
+    client, _, _, _ = portal
+    client.app.state.settings = _pilot_settings()
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    page = client.get("/portal/admin/partners")
+    assert page.status_code == 200
+    assert "Nenhum parceiro cadastrado" in page.text
+
+    created = client.post(
+        "/portal/admin/partners",
+        data={"csrf": _csrf(page.text), "name": "  Parceiro   Sintético  Gradual "},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    partner = db_session.scalar(select(Partner).where(Partner.name == "Parceiro Sintético Gradual"))
+    assert partner is not None
+    assert re.fullmatch(r"PRT-[0-9A-F]{10}", partner.external_id)
+    assert partner.status == "active"
+    assert partner.pilot_enabled is False
+    assert _partner_audit(db_session, "partner_created", partner.id) == 1
+
+    # Registered but not released: invisible to the catalog, detail and upload flows.
+    assert partner.name not in client.get("/portal/partners").text
+    assert client.get(f"/portal/partners/{partner.id}").status_code == 404
+    assert partner.name not in client.get("/portal/imports/new").text
+
+    csrf = _csrf(client.get("/portal/admin/partners").text)
+    unconfirmed = client.post(
+        f"/portal/admin/partners/{partner.id}/pilot/enable",
+        data={"csrf": csrf},
+        follow_redirects=False,
+    )
+    assert unconfirmed.status_code == 400
+    enabled = client.post(
+        f"/portal/admin/partners/{partner.id}/pilot/enable",
+        data={"csrf": csrf, "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert enabled.status_code == 303
+    db_session.refresh(partner)
+    assert partner.pilot_enabled is True
+    assert _partner_audit(db_session, "partner_pilot_enabled", partner.id) == 1
+    assert partner.name in client.get("/portal/partners").text
+    assert client.get(f"/portal/partners/{partner.id}").status_code == 200
+    assert partner.name in client.get("/portal/imports/new").text
+
+    repeated = client.post(
+        f"/portal/admin/partners/{partner.id}/pilot/enable",
+        data={"csrf": csrf, "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert repeated.status_code == 303
+    assert _partner_audit(db_session, "partner_pilot_enabled", partner.id) == 1
+
+    disabled = client.post(
+        f"/portal/admin/partners/{partner.id}/pilot/disable",
+        data={"csrf": csrf, "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert disabled.status_code == 303
+    db_session.refresh(partner)
+    assert partner.pilot_enabled is False
+    assert _partner_audit(db_session, "partner_pilot_disabled", partner.id) == 1
+    assert client.get(f"/portal/partners/{partner.id}").status_code == 404
+
+
+def test_partner_admin_rejects_invalid_requests(portal, db_session: Session) -> None:
+    client, synthetic_partner, _, _ = portal
+    # Synthetic runtimes never register real partners.
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    assert client.get("/portal/admin/partners").status_code == 404
+    assert "Gerenciar parceiros" not in client.get("/portal/partners").text
+
+    client.app.state.settings = _pilot_settings()
+    page = client.get("/portal/admin/partners")
+    csrf = _csrf(page.text)
+    before = db_session.scalar(select(func.count()).select_from(Partner))
+    for name in ("", "x", "a" * 121, "Nome\x00oculto"):
+        rejected = client.post("/portal/admin/partners", data={"csrf": csrf, "name": name})
+        assert rejected.status_code == 400
+    assert (
+        client.post(
+            "/portal/admin/partners", data={"csrf": "0" * 32, "name": "Parceiro válido"}
+        ).status_code
+        == 403
+    )
+    assert db_session.scalar(select(func.count()).select_from(Partner)) == before
+
+    # Synthetic partners cannot be promoted into the real pilot scope.
+    promoted = client.post(
+        f"/portal/admin/partners/{synthetic_partner.id}/pilot/enable",
+        data={"csrf": csrf, "confirm": "yes"},
+    )
+    assert promoted.status_code == 404
+    assert (
+        client.post(
+            f"/portal/admin/partners/{synthetic_partner.id}/pilot/publish",
+            data={"csrf": csrf, "confirm": "yes"},
+        ).status_code
+        == 400
+    )
+
+    client.post("/portal/logout", data={"csrf": csrf})
+    assert _login(client).status_code == 303
+    assert client.get("/portal/admin/partners").status_code == 403
 
 
 def test_artifact_is_scoped_to_partner_and_local_synthetic(portal) -> None:
@@ -323,7 +451,9 @@ def test_admin_can_restore_integral_private_pilot_version(
     portal, db_session: Session, tmp_path: Path
 ) -> None:
     client, _, _, _ = portal
-    partner = Partner(external_id="PILOT-RESTORE-001", name="Parceiro piloto de teste")
+    partner = Partner(
+        external_id="PILOT-RESTORE-001", name="Parceiro piloto de teste", pilot_enabled=True
+    )
     source = PdfSourceDocument(
         source_sha256="a" * 64,
         storage_object_key="private/source/opaque-test.pdf",
@@ -349,7 +479,6 @@ def test_admin_can_restore_integral_private_pilot_version(
         app_env="test",
         database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
         pdf_data_scope="private_pilot",
-        pdf_pilot_partner_ids=partner.external_id,
         _env_file=None,
     )
     client.app.state.settings = settings

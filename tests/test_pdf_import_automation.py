@@ -76,7 +76,6 @@ def _settings() -> Settings:
         app_env="test",
         database_url="postgresql+psycopg://synthetic:synthetic@db/synthetic",
         pdf_data_scope="private_pilot",
-        pdf_pilot_partner_ids="PILOT-001",
         _env_file=None,
     )
 
@@ -95,8 +94,13 @@ def _create_batch(
     *,
     external_id: str,
     digest_variant: bytes = b"",
+    pilot_enabled: bool = True,
 ) -> PdfImportBatch:
-    partner = Partner(external_id=external_id, name=f"Parceiro técnico {external_id}")
+    partner = Partner(
+        external_id=external_id,
+        name=f"Parceiro técnico {external_id}",
+        pilot_enabled=pilot_enabled,
+    )
     uploader = AppUser(external_subject=f"local:{external_id.lower()}", status="active")
     db.add_all([partner, uploader])
     db.flush()
@@ -150,7 +154,7 @@ def _success_handler(calls: list[str]):
     return handler
 
 
-def test_worker_processes_only_exactly_allowlisted_batch(db_session: Session, tmp_path) -> None:
+def test_worker_processes_only_pilot_enabled_batch(db_session: Session, tmp_path) -> None:
     storage = LocalPrivatePdfStorage(tmp_path / "pdf", AppEnvironment.TEST)
     allowed = _create_batch(db_session, storage, external_id="PILOT-001")
     blocked = _create_batch(

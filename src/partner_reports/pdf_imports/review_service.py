@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from partner_reports.config import AppEnvironment, Settings
+from partner_reports.partner_scope import partner_in_scope
 from partner_reports.pdf_imports.lifecycle import require_transition
 from partner_reports.persistence.models import (
     Lawsuit,
@@ -39,13 +40,8 @@ def _locked_batch(
     db.scalar(select(Partner.id).where(Partner.id == batch.partner_id).with_for_update())
     batch = db.get(PdfImportBatch, batch_id, with_for_update=True, populate_existing=True)
     partner = db.get(Partner, batch.partner_id)
-    in_scope = (
-        settings.partner_is_in_data_scope(partner.external_id)
-        if settings is not None and partner is not None
-        else partner is not None and partner.external_id.startswith("SYNTHETIC-")
-    )
-    if not in_scope:
-        raise ReviewConflict("Revisão restrita a dados sintéticos ou à allowlist configurada")
+    if not partner_in_scope(settings, partner):
+        raise ReviewConflict("Revisão restrita a dados sintéticos ou a parceiro liberado")
     if batch.review_revision != revision:
         raise ReviewConflict("Lote modificado por outra decisão")
     return batch
