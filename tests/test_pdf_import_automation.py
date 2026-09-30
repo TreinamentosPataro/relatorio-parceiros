@@ -158,7 +158,11 @@ def test_worker_processes_only_pilot_enabled_batch(db_session: Session, tmp_path
     storage = LocalPrivatePdfStorage(tmp_path / "pdf", AppEnvironment.TEST)
     allowed = _create_batch(db_session, storage, external_id="PILOT-001")
     blocked = _create_batch(
-        db_session, storage, external_id="PILOT-002", digest_variant=b"\n% synthetic variant"
+        db_session,
+        storage,
+        external_id="PILOT-002",
+        digest_variant=b"\n% synthetic variant",
+        pilot_enabled=False,
     )
     calls: list[str] = []
 

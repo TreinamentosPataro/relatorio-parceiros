@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from importlib.resources import files
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -90,6 +91,58 @@ _TEMPLATES = Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
+_LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
+_BATCH_STATE_LABELS = {
+    "all": "Todos",
+    "uploaded": "Recebido",
+    "quarantined": "Aguardando processamento",
+    "parsing": "Lendo PDF",
+    "parsed": "PDF lido",
+    "reconciling": "Conferindo no Advbox",
+    "needs_review": "Em revisão",
+    "approved": "Aprovado",
+    "rejected": "Rejeitado",
+    "failed": "Falhou",
+    "superseded": "Substituído",
+}
+_PROCESSING_LABELS = {
+    "pending": "Na fila",
+    "running": "Em andamento",
+    "succeeded": "Concluído",
+    "failed": "Falhou",
+}
+
+
+def _local(value: datetime) -> datetime:
+    # Timestamps are stored in UTC; people read them in the office's time zone.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(_LOCAL_ZONE)
+
+
+def _format_datetime(value: datetime | None) -> str:
+    return _local(value).strftime("%d/%m/%Y %H:%M") if value else "—"
+
+
+def _format_date(value: date | datetime | None) -> str:
+    if value is None:
+        return "—"
+    return (_local(value) if isinstance(value, datetime) else value).strftime("%d/%m/%Y")
+
+
+_TEMPLATES.filters["datahora"] = _format_datetime
+_TEMPLATES.filters["data"] = _format_date
+_TEMPLATES.filters["estado"] = lambda value: _BATCH_STATE_LABELS.get(value, value)
+_TEMPLATES.filters["processamento"] = lambda value: _PROCESSING_LABELS.get(value, value)
+_TEMPLATES.filters["conferencia"] = lambda value: {
+    "matched": "Conferido",
+    "unmatched": "Não encontrado no Advbox",
+    "ambiguous": "Ambíguo",
+    "duplicate_source": "Repetido no PDF",
+    "invalid_identifier": "Identificador inválido",
+    "process_number_exact": "Número do processo",
+    "folder_exact_unique": "Pasta",
+}.get(value, value)
 _ASSETS = files("partner_reports.web")
 _PAGE_SIZE = 10
 _PARTNER_NAME_MAX = 120

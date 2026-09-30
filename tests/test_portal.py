@@ -768,7 +768,7 @@ def test_admin_can_upload_private_pdf_and_duplicate_is_idempotent(
     )
     detail = client.get(received.headers["location"])
     assert detail.status_code == 200
-    assert "ainda não foi interpretado" in detail.text
+    assert "PDF recebido. O processamento automático começa" in detail.text
 
     duplicate = client.post(
         "/portal/imports/new",
@@ -1245,8 +1245,23 @@ def test_portal_visual_layout_and_palette(portal) -> None:
     detail_html = client.get(f"/portal/partners/{partner_a.id}").text
     password_html = client.get("/portal/account/password").text
     client.post("/portal/logout", data={"csrf": _csrf(list_html)})
-    client.app.state.settings = _pilot_settings()
     _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    upload_html = client.get("/portal/imports/new").text
+    received = client.post(
+        "/portal/imports/new",
+        data={
+            "csrf": _csrf(upload_html),
+            "partner_id": str(partner_a.id),
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+        },
+        files={"source_pdf": ("synthetic.pdf", _synthetic_source_pdf(), "application/pdf")},
+        follow_redirects=False,
+    )
+    batch_html = client.get(received.headers["location"]).text
+    assert "Aguardando processamento" in batch_html
+    assert "Na fila" in batch_html
+    client.app.state.settings = _pilot_settings()
     admin_page = client.get("/portal/admin/partners").text
     client.post(
         "/portal/admin/partners",
@@ -1266,6 +1281,8 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         "portal": list_html,
         "detail": detail_html,
         "password": password_html,
+        "upload": upload_html,
+        "batch": batch_html,
         "partner_admin": partner_admin_html,
     }
 
@@ -1293,15 +1310,25 @@ def test_portal_visual_layout_and_palette(portal) -> None:
                             "element => getComputedStyle(element).backgroundColor"
                         )
                         assert background == "rgb(10, 10, 10)"
-                        await page.locator(".button-primary").first.hover()
-                        await page.wait_for_function(
-                            "getComputedStyle(document.querySelector('.button-primary'))"
-                            ".backgroundColor === 'rgb(255, 193, 77)'"
-                        )
-                        hover = await page.locator(".button-primary").first.evaluate(
-                            "element => getComputedStyle(element).backgroundColor"
-                        )
-                        assert hover == "rgb(255, 193, 77)"
+                        if await page.locator(".button-primary").count():
+                            await page.locator(".button-primary").first.hover()
+                            await page.wait_for_function(
+                                "getComputedStyle(document.querySelector('.button-primary'))"
+                                ".backgroundColor === 'rgb(255, 193, 77)'"
+                            )
+                            hover = await page.locator(".button-primary").first.evaluate(
+                                "element => getComputedStyle(element).backgroundColor"
+                            )
+                            assert hover == "rgb(255, 193, 77)"
+                        box = page.locator("input[type=checkbox]").first
+                        if await box.count():
+                            await box.check()
+                            assert await box.is_checked()
+                            await page.wait_for_timeout(400)
+                            assert (
+                                await box.evaluate("el => getComputedStyle(el).backgroundColor")
+                                == "rgb(244, 170, 39)"
+                            )
                         await page.screenshot(
                             path=str(output / f"{view}_{label}.png"), full_page=True
                         )
