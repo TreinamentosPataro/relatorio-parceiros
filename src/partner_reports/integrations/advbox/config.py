@@ -13,6 +13,8 @@ class AdvboxAuditSettings(BaseSettings):
         env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
+        # Validation errors reach worker logs; never echo raw values next to the token.
+        hide_input_in_errors=True,
     )
 
     advbox_api_base_url: AnyHttpUrl = AnyHttpUrl("https://app.advbox.com.br/api/v1")

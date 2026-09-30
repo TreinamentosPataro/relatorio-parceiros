@@ -102,7 +102,10 @@ def test_production_configuration_is_explicitly_synthetic_only() -> None:
 def test_synthetic_runtime_deployer_is_reversible_and_preserves_secrets() -> None:
     script = (ROOT / "ops" / "deploy-synthetic-runtime.sh").read_text(encoding="utf-8")
 
-    assert "PDF_DATA_SCOPE synthetic_only" in script
+    assert 'PDF_DATA_SCOPE "$active_scope"' in script
+    assert "PDF_DATA_SCOPE synthetic_only" not in script
+    assert "private_pilot exige deploy/advbox.env" in script
+    assert "PDF_DATA_SCOPE ativo invalido" in script
     assert "APP_ENV production" in script
     assert "deployment_status=rolled_back" in script
     assert 'cp -p "$rollback/compose.env" "$compose_env"' in script
@@ -230,6 +233,44 @@ def test_deployer_pauses_and_restores_worker_timer() -> None:
     assert stop < swap
     assert "worker em execucao; aguarde a conclusao" in script
     assert script.count('systemctl start "$worker_timer"') == 2
+
+
+def test_scope_switch_requires_token_confirmation_and_rolls_back() -> None:
+    script = (ROOT / "ops" / "set-data-scope.sh").read_text(encoding="utf-8")
+
+    assert "synthetic_only | private_pilot) ;;" in script
+    assert "instale o token com ops/install-advbox-token.sh antes" in script
+    assert '"$(stat -c %a "$advbox_env")" != 600' in script
+    assert "'LIBERAR DADOS REAIS'" in script
+    # The candidate configuration is validated offline before the live app changes.
+    validate = script.index(
+        'docker run --rm --network none --env-file "$backup_dir/production.env.next"'
+    )
+    swap = script.index('install -m 600 "$backup_dir/production.env.next" "$production_env"')
+    assert validate < swap
+    assert 'index($0, "PDF_PILOT_PARTNER_IDS=") == 1 { next }' in script
+    assert 'systemctl stop "$worker_timer"' in script
+    assert "scope_status=rolled_back" in script
+    assert 'cp -p "$backup_dir/production.env" "$production_env"' in script
+    assert "set -x" not in script
+
+
+def test_advbox_token_installer_never_exposes_the_token() -> None:
+    script = (ROOT / "ops" / "install-advbox-token.sh").read_text(encoding="utf-8")
+
+    assert "stty -echo" in script
+    assert "IFS= read -r token" in script
+    assert 'ENVIRON["ADVBOX_TOKEN_INPUT"]' in script
+    assert "awk -v" not in script
+    assert "unset token" in script
+    assert "token ja instalado; use --replace para substituir" in script
+    assert 'chmod 600 "$tmp"' in script
+    assert "check-advbox" in script
+    assert "advbox_token=not_installed" in script
+    assert "set -x" not in script
+    for line in script.splitlines():
+        if "printf" in line or "echo " in line:
+            assert "$token" not in line
 
 
 def test_r2_eu_migration_validates_before_switching_active_configuration() -> None:

@@ -5,8 +5,10 @@ import asyncio
 import uuid
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from partner_reports.config import AppEnvironment, get_settings
-from partner_reports.integrations.advbox.client import AdvboxClient
+from partner_reports.integrations.advbox.client import AdvboxAuditError, AdvboxClient
 from partner_reports.integrations.advbox.config import AdvboxAuditSettings
 from partner_reports.jobs.automation import (
     bump_revision,
@@ -60,11 +62,24 @@ async def _drain_private(settings, sessions, output_root: Path) -> dict[str, int
     return counts
 
 
+async def _check_advbox() -> str:
+    # One GET of one item proves the token and egress; the payload is discarded unread.
+    try:
+        async with AdvboxClient(AdvboxAuditSettings()) as client:  # type: ignore[call-arg]
+            await client.list_page("lawsuits", limit=1, offset=0)
+    except ValidationError:
+        return "token_missing_or_invalid"
+    except AdvboxAuditError as exc:
+        return type(exc).__name__
+    return "ok"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Automação de relatórios e importações PDF")
     parser.add_argument(
         "command",
         choices=(
+            "check-advbox",
             "run-now",
             "work-once",
             "drain",
@@ -78,6 +93,12 @@ def main() -> None:
     parser.add_argument("--partner-code", help="Código SYNTHETIC-* para simular mudança")
     parser.add_argument("--output-root", type=Path)
     args = parser.parse_args()
+    if args.command == "check-advbox":
+        result = asyncio.run(_check_advbox())
+        print(f"advbox_api={result}")
+        if result != "ok":
+            raise SystemExit(1)
+        return
     settings = get_settings()
     sessions = get_session_factory()
     output_root = args.output_root or settings.report_storage_root

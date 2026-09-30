@@ -134,6 +134,24 @@ $PR create --admin --login <login> --actor-login <admin>
 
 Quem tem `sudo` no host já controla o banco; a recuperação apenas torna essa capacidade auditável. Nenhuma senha aparece em argumento, saída ou log.
 
+### Token do Advbox e troca de escopo
+
+O token é instalado uma única vez, em terminal interativo, sem eco e sem argumento de linha de comando. O instalador grava `deploy/advbox.env` (`600`, lido apenas pelo serviço `worker`) e valida com um único GET de um item em `/lawsuits`, cujo conteúdo é descartado. Se a validação falhar, o arquivo novo é removido e o anterior, se houver, é restaurado:
+
+```sh
+sudo sh /opt/partner-reports/ops/install-advbox-token.sh            # primeira instalação
+sudo sh /opt/partner-reports/ops/install-advbox-token.sh --replace  # rotação
+```
+
+A troca entre `synthetic_only` e `private_pilot` é feita somente por `ops/set-data-scope.sh`. Para `private_pilot`, o script exige o token instalado e a frase `LIBERAR DADOS REAIS`, pausa o worker, valida a configuração candidata num contêiner sem rede, recria o app, confere saúde e escopo e desfaz a troca em caso de falha. A cópia anterior de `production.env` fica em `/opt/partner-reports-releases/scope-*`. O atualizador de versão preserva o escopo ativo e nunca o altera.
+
+```sh
+sudo sh /opt/partner-reports/ops/set-data-scope.sh private_pilot
+sudo sh /opt/partner-reports/ops/set-data-scope.sh synthetic_only   # retirada imediata dos dados reais do portal
+```
+
+Voltar para `synthetic_only` esconde parceiros, lotes e relatórios reais do portal e do worker, mas não apaga dados: a eliminação segue a política de retenção.
+
 ### Parceiros do piloto (ADR-005)
 
 Em `private_pilot`, um administrador usa **Gerenciar parceiros** no portal para cadastrar o parceiro (o código técnico é gerado) e liberá-lo quando o PDF da carteira estiver pronto. Suspender retira o parceiro de catálogo, upload, revisão, worker e geração, sem apagar histórico. `PDF_PILOT_PARTNER_IDS` foi aposentada: se ainda estiver preenchida em `production.env`, a aplicação recusa iniciar.

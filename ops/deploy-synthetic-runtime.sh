@@ -48,6 +48,23 @@ for required_file in "$compose_file" "$compose_env" "$production_env"; do
     fi
 done
 
+# A release never changes the data scope; ops/set-data-scope.sh is the only switch.
+active_scope=$(awk -F= '$1 == "PDF_DATA_SCOPE" {sub(/^[^=]*=/, ""); print; exit}' "$production_env")
+case "${active_scope:-synthetic_only}" in
+    synthetic_only) active_scope=synthetic_only ;;
+    private_pilot)
+        if [ ! -f "$project_root/deploy/advbox.env" ]; then
+            printf '%s\n' 'private_pilot exige deploy/advbox.env' >&2
+            exit 1
+        fi
+        ;;
+    *)
+        printf '%s\n' 'PDF_DATA_SCOPE ativo invalido' >&2
+        exit 1
+        ;;
+esac
+scope_check='import os; from partner_reports.config import get_settings; s=get_settings(); assert s.is_production and s.pdf_data_scope.value == os.environ["EXPECTED_SCOPE"]'
+
 if systemctl is-active --quiet "$service_name"; then
     printf '%s\n' 'backup em execucao; aguarde a conclusao' >&2
     exit 1
@@ -116,12 +133,11 @@ for required_file in \
     fi
 done
 
-new_image=partner-reports:synthetic-$release_id
+new_image=partner-reports:release-$release_id
 docker build --target production --tag "$new_image" "$candidate"
 docker run --rm --env-file "$production_env" \
-    -e APP_ENV=production -e PDF_DATA_SCOPE=synthetic_only \
-    "$new_image" python -c \
-    'from partner_reports.config import get_settings; s=get_settings(); assert s.is_production and s.synthetic_validation_only; print("runtime_scope=verified")'
+    -e APP_ENV=production -e PDF_DATA_SCOPE="$active_scope" -e EXPECTED_SCOPE="$active_scope" \
+    "$new_image" python -c "$scope_check; print('runtime_scope=verified')"
 
 systemctl stop "$timer_name"
 timer_was_active=1
@@ -171,7 +187,7 @@ rewrite_env() {
 
 production_next=$work_dir/production.env
 rewrite_env "$production_env" APP_ENV production "$production_next"
-rewrite_env "$production_next" PDF_DATA_SCOPE synthetic_only "$production_next.scope"
+rewrite_env "$production_next" PDF_DATA_SCOPE "$active_scope" "$production_next.scope"
 install -m 600 "$production_next.scope" "$production_env"
 
 compose_next=$work_dir/compose.env
@@ -216,8 +232,9 @@ until curl --fail --silent --show-error --max-time 15 "$site_address/health" \
     sleep 2
 done
 
-docker compose --env-file "$compose_env" -f "$compose_file" exec -T app python -c \
-    'from partner_reports.config import get_settings; s=get_settings(); assert s.is_production and s.synthetic_validation_only; print("deployed_scope=synthetic_only")'
+docker compose --env-file "$compose_env" -f "$compose_file" exec -T \
+    -e EXPECTED_SCOPE="$active_scope" app python -c "$scope_check"
+printf 'deployed_scope=%s\n' "$active_scope"
 
 completed=1
 if [ "$timer_was_active" -eq 1 ]; then
@@ -235,7 +252,7 @@ sha256sum "$release_archive" >"$rollback/release.sha256"
 printf '%s\n' \
     'deployment_status=verified' \
     'app_environment=production' \
-    'data_scope=synthetic_only' \
+    "data_scope=$active_scope" \
     'public_health=ok' \
     'backup_timer=active' \
     "rollback_directory=$rollback"
