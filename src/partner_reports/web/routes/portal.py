@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jinja2 import Environment, StrictUndefined, select_autoescape
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
@@ -53,6 +53,7 @@ from partner_reports.persistence.models import (
     PdfReconciliationItem,
     PdfReconciliationRun,
     PdfSourceDocument,
+    PortalCredential,
     PortalSession,
     ReportGenerationRequest,
     ReportVersion,
@@ -67,11 +68,13 @@ from partner_reports.web.artifacts import (
 from partner_reports.web.audit import emit_audit, record_audit, request_correlation_id
 from partner_reports.web.security import (
     COOKIE_NAME,
+    MIN_PASSWORD_LENGTH,
     authenticated_user,
     clear_login_failures,
     find_credential,
     find_session,
     get_user_roles,
+    hash_password,
     login_is_limited,
     new_session,
     normalize_login,
@@ -482,6 +485,101 @@ async def logout(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
     )
     response = RedirectResponse("/portal/login", status_code=303)
     response.delete_cookie(COOKIE_NAME, path="/")
+    return response
+
+
+def _password_page(
+    db: Session,
+    user: AppUser,
+    csrf: str,
+    *,
+    changed: bool = False,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    credential = db.scalar(select(PortalCredential).where(PortalCredential.user_id == user.id))
+    response = _render(
+        "account_password.html.j2",
+        csrf=csrf,
+        login_name=credential.login_name if credential else "",
+        min_length=MIN_PASSWORD_LENGTH,
+        changed=changed,
+        error=error,
+    )
+    response.status_code = status_code
+    return response
+
+
+@router.get("/portal/account/password")
+def password_page(request: Request, alterada: int = 0, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _need_user(db, request)
+    return _password_page(db, user, record.csrf_token, changed=alterada == 1)
+
+
+@router.post("/portal/account/password")
+async def change_password(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _need_user(db, request)
+    form = await _form(request)
+    _csrf(form, record)
+    # Same limiter as login: a stolen session must not become a password oracle.
+    bucket = _login_bucket(request)
+    if login_is_limited(db, bucket):
+        _audit_commit(
+            db,
+            request,
+            "password_change_failed",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            reason_code="rate_limited",
+        )
+        raise HTTPException(status_code=429, detail="Tente novamente mais tarde")
+    credential = db.scalar(
+        select(PortalCredential).where(PortalCredential.user_id == user.id).with_for_update()
+    )
+    current = form.get("current_password", "")
+    new = form.get("new_password", "")
+    if credential is None or not verify_password(credential.password_hash, current):
+        record_login_failure(db, bucket)
+        _audit_commit(
+            db,
+            request,
+            "password_change_failed",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            reason_code="invalid_credentials",
+        )
+        return _password_page(
+            db, user, record.csrf_token, error="Senha atual incorreta.", status_code=400
+        )
+    error = None
+    if new != form.get("confirm_password", ""):
+        error = "A confirmação não coincide com a nova senha."
+    elif new == current:
+        error = "A nova senha deve ser diferente da atual."
+    else:
+        try:
+            credential.password_hash = hash_password(new)
+        except ValueError:
+            error = f"A nova senha deve ter entre {MIN_PASSWORD_LENGTH} e 256 caracteres."
+    if error:
+        db.rollback()
+        return _password_page(db, user, record.csrf_token, error=error, status_code=400)
+    clear_login_failures(db, bucket)
+    # Every other session of this account ends; the current browser gets a fresh one.
+    db.execute(delete(PortalSession).where(PortalSession.user_id == user.id))
+    token, _ = new_session(db, user.id)
+    _audit_commit(
+        db,
+        request,
+        "password_changed",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+    )
+    response = RedirectResponse("/portal/account/password?alterada=1", status_code=303)
+    _cookie(response, token)
     return response
 
 

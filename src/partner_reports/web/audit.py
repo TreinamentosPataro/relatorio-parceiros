@@ -39,6 +39,9 @@ _ACTIONS = frozenset(
         "partner_created",
         "partner_pilot_enabled",
         "partner_pilot_disabled",
+        "password_changed",
+        "password_change_failed",
+        "password_reset",
     }
 )
 _ENTITIES = frozenset({"none", "user", "partner", "report_version", "pdf_import_batch"})

@@ -1102,6 +1102,138 @@ def test_admin_can_disable_account_and_revoke_live_session(portal, db_session, m
     assert "account_disabled" in set(db_session.scalars(select(AuditEvent.action)).all())
 
 
+def _change_password(client: TestClient, current: str, new: str, confirm: str | None = None):
+    page = client.get("/portal/account/password")
+    assert page.status_code == 200
+    return client.post(
+        "/portal/account/password",
+        data={
+            "csrf": _csrf(page.text),
+            "current_password": current,
+            "new_password": new,
+            "confirm_password": new if confirm is None else confirm,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_user_changes_own_password_and_other_sessions_end(portal, db_session) -> None:
+    client, partner_a, _, _ = portal
+    other = TestClient(client.app, base_url="https://testserver")
+    assert _login(other).status_code == 303
+    assert _login(client).status_code == 303
+    assert "/portal/account/password" in client.get("/portal/partners").text
+
+    new_password = "synthetic-changed-password-viewer"
+    changed = _change_password(client, "synthetic-long-password-viewer", new_password)
+    assert changed.status_code == 303
+    assert changed.headers["location"] == "/portal/account/password?alterada=1"
+    assert "Senha alterada com sucesso" in client.get(changed.headers["location"]).text
+    # The browser that changed the password keeps working; every other session ends.
+    assert client.get(f"/portal/partners/{partner_a.id}").status_code == 200
+    assert other.get(f"/portal/partners/{partner_a.id}").status_code == 401
+
+    fresh = TestClient(client.app, base_url="https://testserver")
+    assert _login(fresh).status_code == 200
+    assert _login(fresh, password=new_password).status_code == 303
+    actions = list(db_session.scalars(select(AuditEvent.action)).all())
+    assert actions.count("password_changed") == 1
+    assert new_password not in " ".join(
+        str(event.__dict__) for event in db_session.scalars(select(AuditEvent)).all()
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "new", "confirm", "message"),
+    [
+        ("wrong-current-password", "synthetic-new-password-long", None, "Senha atual incorreta"),
+        ("synthetic-long-password-viewer", "curta", None, "entre 14 e 256"),
+        (
+            "synthetic-long-password-viewer",
+            "synthetic-new-password-long",
+            "synthetic-other-password",
+            "não coincide",
+        ),
+        (
+            "synthetic-long-password-viewer",
+            "synthetic-long-password-viewer",
+            None,
+            "diferente da atual",
+        ),
+    ],
+)
+def test_password_change_rejects_invalid_input(
+    portal, current: str, new: str, confirm: str | None, message: str
+) -> None:
+    client, _, _, _ = portal
+    assert _login(client).status_code == 303
+    rejected = _change_password(client, current, new, confirm)
+    assert rejected.status_code == 400
+    assert message in rejected.text
+    # The old password still works after any rejected change.
+    fresh = TestClient(client.app, base_url="https://testserver")
+    assert _login(fresh).status_code == 303
+
+
+def test_password_change_requires_session_csrf_and_limits_guessing(portal) -> None:
+    client, _, _, _ = portal
+    assert client.get("/portal/account/password").status_code == 401
+    assert _login(client).status_code == 303
+    forged = client.post(
+        "/portal/account/password",
+        data={
+            "csrf": "0" * 64,
+            "current_password": "synthetic-long-password-viewer",
+            "new_password": "synthetic-new-password-long",
+            "confirm_password": "synthetic-new-password-long",
+        },
+    )
+    assert forged.status_code == 403
+    for _ in range(5):
+        assert _change_password(client, "wrong-guess-password", "synthetic-new-pw-long").status_code
+    limited = _change_password(
+        client, "synthetic-long-password-viewer", "synthetic-new-password-long"
+    )
+    assert limited.status_code == 429
+
+
+def test_host_operator_lists_accounts_and_resets_forgotten_password(
+    portal, db_session, monkeypatch, capsys
+):
+    client, partner_a, _, _ = portal
+    assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
+    sessions = sessionmaker(
+        bind=db_session.get_bind(), expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    monkeypatch.setattr("partner_reports.web.user_cli.get_session_factory", lambda: sessions)
+    monkeypatch.setattr(sys, "argv", ["portal-user", "list"])
+    user_cli_main()
+    listing = capsys.readouterr().out
+    assert "synthetic-admin\tactive\tportal_admin" in listing
+    assert "synthetic-viewer\tactive\tportal_viewer" in listing
+    assert "$argon2" not in listing
+
+    recovered = "synthetic-recovered-password-admin"
+    monkeypatch.setattr("partner_reports.web.user_cli.getpass.getpass", lambda _prompt: recovered)
+    monkeypatch.setattr(
+        sys, "argv", ["portal-user", "reset-password", "--login", "synthetic-admin"]
+    )
+    user_cli_main()
+    assert recovered not in capsys.readouterr().out
+    # The reset revokes live sessions and only the new password is accepted.
+    assert client.get(f"/portal/partners/{partner_a.id}").status_code == 401
+    fresh = TestClient(client.app, base_url="https://testserver")
+    assert _login(fresh, "synthetic-admin", "synthetic-long-password-admin").status_code == 200
+    assert _login(fresh, "synthetic-admin", recovered).status_code == 303
+    assert "password_reset" in set(db_session.scalars(select(AuditEvent.action)).all())
+
+    monkeypatch.setattr(
+        sys, "argv", ["portal-user", "reset-password", "--login", "synthetic-missing"]
+    )
+    with pytest.raises(SystemExit, match="Conta não encontrada"):
+        user_cli_main()
+
+
 @pytest.mark.browser
 def test_portal_visual_layout_and_palette(portal) -> None:
     from playwright.async_api import async_playwright
@@ -1111,6 +1243,16 @@ def test_portal_visual_layout_and_palette(portal) -> None:
     _login(client)
     list_html = client.get("/portal/partners").text
     detail_html = client.get(f"/portal/partners/{partner_a.id}").text
+    password_html = client.get("/portal/account/password").text
+    client.post("/portal/logout", data={"csrf": _csrf(list_html)})
+    client.app.state.settings = _pilot_settings()
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    admin_page = client.get("/portal/admin/partners").text
+    client.post(
+        "/portal/admin/partners",
+        data={"csrf": _csrf(admin_page), "name": "Parceiro Sintético com Nome Bastante Longo"},
+    )
+    partner_admin_html = client.get("/portal/admin/partners").text
     css = client.get("/portal/assets.css").text
     assert "#F4AA27" in css
     assert "#FFC14D" in css
@@ -1123,6 +1265,8 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         "login": login_html,
         "portal": list_html,
         "detail": detail_html,
+        "password": password_html,
+        "partner_admin": partner_admin_html,
     }
 
     async def check() -> None:
@@ -1149,12 +1293,12 @@ def test_portal_visual_layout_and_palette(portal) -> None:
                             "element => getComputedStyle(element).backgroundColor"
                         )
                         assert background == "rgb(10, 10, 10)"
-                        await page.locator(".button-primary").hover()
+                        await page.locator(".button-primary").first.hover()
                         await page.wait_for_function(
                             "getComputedStyle(document.querySelector('.button-primary'))"
                             ".backgroundColor === 'rgb(255, 193, 77)'"
                         )
-                        hover = await page.locator(".button-primary").evaluate(
+                        hover = await page.locator(".button-primary").first.evaluate(
                             "element => getComputedStyle(element).backgroundColor"
                         )
                         assert hover == "rgb(255, 193, 77)"

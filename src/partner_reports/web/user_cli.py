@@ -17,6 +17,7 @@ from partner_reports.persistence.models import (
 )
 from partner_reports.web.audit import emit_audit, record_audit
 from partner_reports.web.security import (
+    MIN_PASSWORD_LENGTH,
     find_credential,
     get_user_roles,
     hash_password,
@@ -40,10 +41,39 @@ def _admin_actor(db, actor_login: str | None) -> AppUser:
     return user
 
 
+def _new_password() -> str:
+    password = getpass.getpass(f"Senha (mínimo de {MIN_PASSWORD_LENGTH} caracteres): ")
+    confirmation = getpass.getpass("Confirme a senha: ")
+    if password != confirmation:
+        raise SystemExit("Senhas não coincidem")
+    return password
+
+
+def _list_accounts() -> None:
+    with get_session_factory()() as db:
+        rows = db.execute(
+            select(PortalCredential.login_name, AppUser.status, AppUser.id)
+            .join(AppUser, AppUser.id == PortalCredential.user_id)
+            .order_by(PortalCredential.login_name)
+        ).all()
+        for login_name, user_status, user_id in rows:
+            roles = ",".join(sorted(get_user_roles(db, user_id))) or "-"
+            print(f"{login_name}\t{user_status}\t{roles}")
+    print(f"contas: {len(rows)}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gerenciar contas internas do portal")
     parser.add_argument(
-        "command", choices=("create", "disable", "revoke-sessions", "purge-expired")
+        "command",
+        choices=(
+            "create",
+            "disable",
+            "revoke-sessions",
+            "purge-expired",
+            "list",
+            "reset-password",
+        ),
     )
     parser.add_argument("--login", help="identificador técnico da conta, sem dados pessoais")
     parser.add_argument("--actor-login", help="identificador técnico do administrador executor")
@@ -51,6 +81,9 @@ def main() -> None:
         "--admin", action="store_true", help="conceder papel administrativo ao criar"
     )
     args = parser.parse_args()
+    if args.command == "list":
+        _list_accounts()
+        return
     if args.command != "purge-expired" and not args.login:
         parser.error("--login é obrigatório")
     if args.admin and args.command != "create":
@@ -60,14 +93,26 @@ def main() -> None:
         bootstrap = args.command == "create" and not db.scalar(select(func.count(AppUser.id)))
         if bootstrap and not args.admin:
             raise SystemExit("A primeira conta interna deve ser administradora")
-        actor = None if bootstrap else _admin_actor(db, args.actor_login)
-        if args.command == "create":
+        # Break-glass: whoever runs this on the host already controls the database, so a
+        # forgotten password is recovered here and audited without a portal actor.
+        recovery = args.command == "reset-password"
+        actor = None if bootstrap or recovery else _admin_actor(db, args.actor_login)
+        if recovery:
+            credential = db.scalar(
+                select(PortalCredential)
+                .where(PortalCredential.login_name == login)
+                .with_for_update()
+            )
+            if credential is None:
+                raise SystemExit("Conta não encontrada")
+            credential.password_hash = hash_password(_new_password())
+            target = db.get(AppUser, credential.user_id)
+            db.execute(delete(PortalSession).where(PortalSession.user_id == target.id))
+            action = "password_reset"
+        elif args.command == "create":
             if db.scalar(select(PortalCredential.id).where(PortalCredential.login_name == login)):
                 raise SystemExit("Identificador já cadastrado")
-            password = getpass.getpass("Senha (mínimo de 14 caracteres): ")
-            confirmation = getpass.getpass("Confirme a senha: ")
-            if password != confirmation:
-                raise SystemExit("Senhas não coincidem")
+            password = _new_password()
             user = AppUser(external_subject=f"local:{login}", status="active")
             db.add(user)
             db.flush()

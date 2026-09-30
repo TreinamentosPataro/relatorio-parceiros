@@ -119,6 +119,21 @@ sudo /opt/partner-reports/ops/install-worker-timer.sh
 
 O timer dispara o worker 1 minuto depois do término da execução anterior; cada execução processa até 10 itens das filas de importação e de relatório. Conferência diária: `systemctl is-active partner-reports-worker.timer` e `systemctl --failed`. Para pausar o processamento sem desinstalar: `sudo systemctl stop partner-reports-worker.timer`. As saídas no journal contêm somente contagens por resultado.
 
+Os pacotes gerados no Windows não preservam o bit de execução; execute os scripts de `ops/` com `sudo sh <script>`.
+
+### Contas e senhas
+
+Cada usuário troca a própria senha em **Alterar senha**, no cabeçalho do portal: exige a senha atual, usa o mesmo limitador do login e encerra as outras sessões da conta. Na VPS, o operador do host lista contas e recupera uma senha esquecida sem precisar de outro administrador (evento `password_reset`, sessões da conta revogadas):
+
+```sh
+PR="sudo docker compose --project-directory /opt/partner-reports --env-file /opt/partner-reports/deploy/compose.env -f /opt/partner-reports/compose.production.yml --profile operations run --rm migrate python -m partner_reports.web.user_cli"
+$PR list
+$PR reset-password --login <login>
+$PR create --admin --login <login> --actor-login <admin>
+```
+
+Quem tem `sudo` no host já controla o banco; a recuperação apenas torna essa capacidade auditável. Nenhuma senha aparece em argumento, saída ou log.
+
 ### Parceiros do piloto (ADR-005)
 
 Em `private_pilot`, um administrador usa **Gerenciar parceiros** no portal para cadastrar o parceiro (o código técnico é gerado) e liberá-lo quando o PDF da carteira estiver pronto. Suspender retira o parceiro de catálogo, upload, revisão, worker e geração, sem apagar histórico. `PDF_PILOT_PARTNER_IDS` foi aposentada: se ainda estiver preenchida em `production.env`, a aplicação recusa iniciar.
