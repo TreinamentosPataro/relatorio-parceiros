@@ -39,6 +39,8 @@ compose_env=$project_root/deploy/compose.env
 production_env=$project_root/deploy/production.env
 timer_name=partner-reports-backup.timer
 service_name=partner-reports-backup.service
+worker_timer=partner-reports-worker.timer
+worker_service=partner-reports-worker.service
 for required_file in "$compose_file" "$compose_env" "$production_env"; do
     if [ ! -f "$required_file" ]; then
         printf '%s\n' 'configuracao ativa obrigatoria ausente' >&2
@@ -78,6 +80,7 @@ rollback=$releases_root/rollback-$release_id
 install -d -m 700 "$candidate" "$rollback"
 
 timer_was_active=0
+worker_timer_was_active=0
 changed=0
 completed=0
 cleanup() {
@@ -92,6 +95,9 @@ cleanup() {
     fi
     if [ "$timer_was_active" -eq 1 ]; then
         systemctl start "$timer_name" >/dev/null 2>&1 || true
+    fi
+    if [ "$worker_timer_was_active" -eq 1 ]; then
+        systemctl start "$worker_timer" >/dev/null 2>&1 || true
     fi
     case "$work_dir" in
         "$releases_root"/.deploy.*) rm -rf -- "$work_dir" ;;
@@ -121,6 +127,15 @@ systemctl stop "$timer_name"
 timer_was_active=1
 if systemctl is-active --quiet "$service_name"; then
     printf '%s\n' 'backup iniciou durante a preparacao; implantacao cancelada' >&2
+    exit 1
+fi
+# The worker timer is optional until installed; pause it so no job runs across the swap.
+if systemctl is-active --quiet "$worker_timer"; then
+    systemctl stop "$worker_timer"
+    worker_timer_was_active=1
+fi
+if systemctl is-active --quiet "$worker_service"; then
+    printf '%s\n' 'worker em execucao; aguarde a conclusao' >&2
     exit 1
 fi
 
@@ -209,6 +224,11 @@ if [ "$timer_was_active" -eq 1 ]; then
     systemctl start "$timer_name"
     systemctl is-active --quiet "$timer_name"
     timer_was_active=0
+fi
+if [ "$worker_timer_was_active" -eq 1 ]; then
+    systemctl start "$worker_timer"
+    systemctl is-active --quiet "$worker_timer"
+    worker_timer_was_active=0
 fi
 
 sha256sum "$release_archive" >"$rollback/release.sha256"

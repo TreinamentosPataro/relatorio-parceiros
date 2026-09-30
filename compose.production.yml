@@ -71,7 +71,7 @@ services:
       - ${PARTNER_REPORTS_ENV_FILE:-./deploy/production.env}
       - path: ${ADVBOX_ENV_FILE:-./deploy/advbox.env}
         required: false
-    command: ["python", "-m", "partner_reports.jobs.automation_cli", "work-once", "--output-root", "/data/reports"]
+    command: ["python", "-m", "partner_reports.jobs.automation_cli", "drain", "--output-root", "/data/reports"]
     networks: [backend, outbound]
     depends_on:
       postgres:

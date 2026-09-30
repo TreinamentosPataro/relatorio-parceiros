@@ -107,6 +107,22 @@ sudo /opt/partner-reports/ops/deploy-synthetic-runtime.sh /tmp/partner-reports-s
 
 O atualizador recusa execução fora de `/opt/partner-reports`, pacotes com caminhos de segredo, backup concorrente e configuração incompleta. Ele constrói e testa a imagem antes da troca, pausa o timer, preserva os arquivos de ambiente, força `APP_ENV=production` e `PDF_DATA_SCOPE=synthetic_only`, aplica migrations, valida saúde interna/pública e reativa o timer. Se uma verificação posterior à troca falhar, restaura arquivos, imagem e ambiente anteriores. O diretório de rollback informado ao final deve ser preservado até a validação funcional do portal. Remova os dois arquivos temporários de `/tmp` somente depois dessa validação.
 
+Desde o ADR-006, o atualizador também pausa `partner-reports-worker.timer`, se instalado, e recusa promover enquanto o worker estiver em execução. Proxy e app compartilham somente a rede interna `ingress` (`INGRESS_SUBNET`, padrão `10.254.18.0/29`); antes da primeira promoção com essa rede, confirme que a sub-rede não colide com redes existentes no host (`docker network inspect` das redes do outro projeto).
+
+### Worker agendado (ADR-006)
+
+Instale uma vez, depois de a versão com o comando `drain` estar promovida:
+
+```sh
+sudo /opt/partner-reports/ops/install-worker-timer.sh
+```
+
+O timer dispara o worker 1 minuto depois do término da execução anterior; cada execução processa até 10 itens das filas de importação e de relatório. Conferência diária: `systemctl is-active partner-reports-worker.timer` e `systemctl --failed`. Para pausar o processamento sem desinstalar: `sudo systemctl stop partner-reports-worker.timer`. As saídas no journal contêm somente contagens por resultado.
+
+### Parceiros do piloto (ADR-005)
+
+Em `private_pilot`, um administrador usa **Gerenciar parceiros** no portal para cadastrar o parceiro (o código técnico é gerado) e liberá-lo quando o PDF da carteira estiver pronto. Suspender retira o parceiro de catálogo, upload, revisão, worker e geração, sem apagar histórico. `PDF_PILOT_PARTNER_IDS` foi aposentada: se ainda estiver preenchida em `production.env`, a aplicação recusa iniciar.
+
 O repositório Restic deve ser criado conscientemente uma única vez; o job de backup falha fechado se o destino estiver ausente ou inacessível e nunca o inicializa por conta própria:
 
 ```sh

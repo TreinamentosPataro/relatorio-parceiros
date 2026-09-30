@@ -1,0 +1,11 @@
+[Unit]
+Description=Drain the Partner Reports queue one minute after each run finishes
+
+[Timer]
+OnActiveSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=15s
+Unit=partner-reports-worker.service
+
+[Install]
+WantedBy=timers.target

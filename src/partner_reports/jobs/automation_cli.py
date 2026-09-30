@@ -24,10 +24,15 @@ from partner_reports.pdf_imports.automation import (
 from partner_reports.pdf_imports.storage import build_pdf_storage
 from partner_reports.persistence.database import get_session_factory
 
+# Bounded per scheduled run so one oneshot never monopolizes the single-vCPU host.
+_DRAIN_LIMIT = 10
 
-async def _drain(sessions, app_env: AppEnvironment, output_root: Path) -> dict[str, int]:
+
+async def _drain(
+    sessions, app_env: AppEnvironment, output_root: Path, limit: int = 100
+) -> dict[str, int]:
     counts = {"succeeded": 0, "failed": 0}
-    for _ in range(100):
+    for _ in range(limit):
         result = await process_one(sessions, app_env, output_root)
         if result == "empty":
             break
@@ -45,11 +50,29 @@ async def _process_private_work(settings, sessions, output_root: Path) -> str:
     return f"report:{await process_one(sessions, settings.app_env, output_root, settings=settings)}"
 
 
+async def _drain_private(settings, sessions, output_root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for _ in range(_DRAIN_LIMIT):
+        result = await _process_private_work(settings, sessions, output_root)
+        if result == "report:empty":
+            break
+        counts[result] = counts.get(result, 0) + 1
+    return counts
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Automação de relatórios e importações PDF")
     parser.add_argument(
         "command",
-        choices=("run-now", "work-once", "worker-loop", "status", "retry-failed", "bump-revision"),
+        choices=(
+            "run-now",
+            "work-once",
+            "drain",
+            "worker-loop",
+            "status",
+            "retry-failed",
+            "bump-revision",
+        ),
     )
     parser.add_argument("--key", help="Chave idempotente do ciclo manual")
     parser.add_argument("--partner-code", help="Código SYNTHETIC-* para simular mudança")
@@ -61,6 +84,9 @@ def main() -> None:
     if not settings.synthetic_validation_only:
         if args.command == "work-once":
             print(f"job: {asyncio.run(_process_private_work(settings, sessions, output_root))}")
+            return
+        if args.command == "drain":
+            print(f"jobs: {asyncio.run(_drain_private(settings, sessions, output_root))}")
             return
         if args.command == "status":
             print(f"importações: {pdf_import_status(sessions, settings)}")
@@ -88,6 +114,8 @@ def main() -> None:
         print(f"jobs: {asyncio.run(_drain(sessions, settings.app_env, output_root))}")
     elif args.command == "work-once":
         print(f"job: {asyncio.run(process_one(sessions, settings.app_env, output_root))}")
+    elif args.command == "drain":
+        print(f"jobs: {asyncio.run(_drain(sessions, settings.app_env, output_root, _DRAIN_LIMIT))}")
     elif args.command == "worker-loop":
         print("Worker local sintético iniciado; interrompa com Ctrl+C.", flush=True)
         try:

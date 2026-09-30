@@ -1,0 +1,14 @@
+[Unit]
+Description=Partner Reports scoped PDF import and report worker
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/partner-reports/deploy/compose.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/partner-reports
+ExecStart=/usr/bin/docker compose --env-file deploy/compose.env -f compose.production.yml --profile operations run --rm worker
+TimeoutStartSec=45min
+UMask=0077
+Nice=5

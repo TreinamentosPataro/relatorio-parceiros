@@ -197,6 +197,40 @@ def test_backup_timer_is_daily_persistent_and_uses_isolated_backup_profile() -> 
     assert 'systemctl enable --now "$timer_name"' in installer
 
 
+def test_worker_timer_drains_queue_without_overlapping_runs() -> None:
+    service = (ROOT / "deploy" / "systemd" / "partner-reports-worker.service").read_text(
+        encoding="utf-8"
+    )
+    timer = (ROOT / "deploy" / "systemd" / "partner-reports-worker.timer").read_text(
+        encoding="utf-8"
+    )
+    installer = (ROOT / "ops" / "install-worker-timer.sh").read_text(encoding="utf-8")
+    compose = (ROOT / "compose.production.yml").read_text(encoding="utf-8")
+
+    assert "Type=oneshot" in service
+    assert "--profile operations run --rm worker" in service
+    assert "restic.env" not in service
+    assert "advbox" not in service
+    # Relative to the previous run finishing, so a slow GET-only snapshot never overlaps.
+    assert "OnUnitInactiveSec=1min" in timer
+    assert "OnCalendar" not in timer
+    assert 'automation_cli", "drain"' in _service_block(compose, "worker")
+    assert "systemd-analyze verify" in installer
+    assert "unidade existente divergente" in installer
+    assert 'systemctl enable --now "$timer_name"' in installer
+    assert "set -x" not in installer
+
+
+def test_deployer_pauses_and_restores_worker_timer() -> None:
+    script = (ROOT / "ops" / "deploy-synthetic-runtime.sh").read_text(encoding="utf-8")
+
+    stop = script.index('systemctl stop "$worker_timer"')
+    swap = script.index("changed=1\n\ndocker compose")
+    assert stop < swap
+    assert "worker em execucao; aguarde a conclusao" in script
+    assert script.count('systemctl start "$worker_timer"') == 2
+
+
 def test_r2_eu_migration_validates_before_switching_active_configuration() -> None:
     script = (ROOT / "ops" / "migrate-restic-r2-eu.sh").read_text(encoding="utf-8")
 
