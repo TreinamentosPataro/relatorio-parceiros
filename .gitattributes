@@ -1,0 +1,4 @@
+# Runtime files are executed on Linux; keep LF regardless of the checkout platform.
+* text=auto eol=lf
+*.pdf binary
+*.png binary
