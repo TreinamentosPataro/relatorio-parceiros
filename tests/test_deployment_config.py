@@ -131,6 +131,7 @@ def test_release_builder_packages_only_explicit_runtime_paths() -> None:
     assert '"migrations"' in script
     assert '"ops"' in script
     assert '"deploy/systemd"' in script
+    assert '"deploy/advbox.env.example"' in script
     assert '"deploy/production.env"' not in script
     assert '"deploy/restic.env"' not in script
     assert "Get-FileHash -Algorithm SHA256" in script

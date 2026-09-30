@@ -161,7 +161,7 @@ rollback_manifest=$work_dir/rollback-files.list
 for relative_path in \
     Dockerfile pyproject.toml README.md alembic.ini compose.production.yml compose.staging.yml \
     src migrations deploy/Caddyfile deploy/Caddyfile.staging deploy/production.env.example \
-    deploy/restic.env.example deploy/systemd ops; do
+    deploy/restic.env.example deploy/advbox.env.example deploy/systemd ops; do
     if [ -e "$project_root/$relative_path" ]; then
         printf '%s\n' "$relative_path" >>"$rollback_manifest"
     fi

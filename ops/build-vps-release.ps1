@@ -22,6 +22,7 @@ $required = @(
     "deploy/Caddyfile.staging",
     "deploy/production.env.example",
     "deploy/restic.env.example",
+    "deploy/advbox.env.example",
     "deploy/systemd",
     "ops"
 )
