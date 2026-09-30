@@ -35,7 +35,7 @@ foreach ($item in $required) {
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 Push-Location $projectRoot
 try {
-    & tar -czf $archive @required
+    & tar --exclude "__pycache__" --exclude "*.pyc" -czf $archive @required
     if ($LASTEXITCODE -ne 0) {
         throw "Falha ao criar o pacote de implantação"
     }

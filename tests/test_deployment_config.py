@@ -131,6 +131,7 @@ def test_release_builder_packages_only_explicit_runtime_paths() -> None:
     assert '"deploy/production.env"' not in script
     assert '"deploy/restic.env"' not in script
     assert "Get-FileHash -Algorithm SHA256" in script
+    assert '--exclude "__pycache__"' in script
 
 
 def test_restic_secret_file_is_excluded_from_git_and_build_context() -> None:
