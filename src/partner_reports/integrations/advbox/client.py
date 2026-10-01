@@ -53,6 +53,28 @@ class AdvboxUnexpectedResponse(AdvboxAuditError):
     """The API response did not match the safe read-only contract."""
 
 
+class AdvboxSourceChanged(AdvboxUnexpectedResponse):
+    """Records relevant to the read changed between two paged reads."""
+
+
+def advbox_error_code(exc: AdvboxAuditError) -> str:
+    """Stable, data-free code stored on a failed batch so the cause is visible."""
+
+    for kind, code in (
+        (AdvboxSourceChanged, "API_SOURCE_CHANGED"),
+        (AdvboxAuthenticationError, "API_AUTH_FAILED"),
+        (AdvboxForbiddenError, "API_AUTH_FAILED"),
+        (AdvboxRateLimitError, "API_RATE_LIMITED"),
+        (AdvboxServerError, "API_SERVER_ERROR"),
+        (AdvboxTransportError, "API_TRANSPORT_FAILED"),
+        (AdvboxNotFoundError, "API_NOT_FOUND"),
+        (AdvboxUnexpectedResponse, "API_CONTRACT_MISMATCH"),
+    ):
+        if isinstance(exc, kind):
+            return code
+    return "API_READ_FAILED"
+
+
 @dataclass(frozen=True)
 class SafeHttpResult:
     """A successful response plus timing; callers must immediately sanitize payload."""
@@ -240,6 +262,10 @@ class AdvboxAuditClient:
         await self._sleep(delay)
 
 
+# Official limit per page (https://api.softwareadvbox.com.br/docs, 01/10/2026).
+MAX_PAGE_SIZE = 1000
+
+
 class AdvboxClient:
     """Production-facing allowlist of confirmed, read-only collection endpoints."""
 
@@ -267,10 +293,24 @@ class AdvboxClient:
         return self._transport.metrics
 
     async def list_page(self, resource: str, *, limit: int, offset: int) -> SafeHttpResult:
-        if resource not in self._ENDPOINTS or not 1 <= limit <= 100 or offset < 0:
+        # The official documentation accepts up to 1000 records per page.
+        if resource not in self._ENDPOINTS or not 1 <= limit <= MAX_PAGE_SIZE or offset < 0:
             raise ValueError("recurso ou paginação fora do contrato confirmado")
         return await self._transport.get(
             self._ENDPOINTS[resource], params={"limit": limit, "offset": offset}
+        )
+
+    async def lawsuit_transactions_page(
+        self, lawsuit_id: int, *, limit: int, offset: int
+    ) -> SafeHttpResult:
+        """Entries of one lawsuit through the documented exact `lawsuit_id` filter."""
+
+        if isinstance(lawsuit_id, bool) or not isinstance(lawsuit_id, int) or lawsuit_id <= 0:
+            raise ValueError("ID técnico de processo inválido")
+        if not 1 <= limit <= MAX_PAGE_SIZE or offset < 0:
+            raise ValueError("paginação fora do contrato confirmado")
+        return await self._transport.get(
+            "/transactions", params={"lawsuit_id": lawsuit_id, "limit": limit, "offset": offset}
         )
 
     async def lawsuit_movements(self, lawsuit_id: int) -> SafeHttpResult:

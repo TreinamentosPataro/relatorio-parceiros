@@ -231,10 +231,14 @@ def _success_handler(calls: list[str]):
         calls.append(request.method)
         if request.url.path.endswith(f"/movements/{PORTFOLIO_ID}"):
             return httpx.Response(200, json={"data": movements, "query": []})
-        data = entries if request.url.path.endswith("/transactions") else rows
+        data = rows
+        if request.url.path.endswith("/transactions"):
+            lawsuit = int(request.url.params["lawsuit_id"])
+            data = [entry for entry in entries if entry["lawsuit_id"] == lawsuit]
+        limit = int(request.url.params["limit"])
         return httpx.Response(
             200,
-            json={"data": data, "totalCount": len(data), "limit": 100, "offset": 0},
+            json={"data": data, "totalCount": len(data), "limit": limit, "offset": 0},
         )
 
     return handler
@@ -350,7 +354,7 @@ def test_worker_resumes_from_parsed_boundary_after_api_failure(
     row = db_session.get(PdfImportBatch, batch.id)
     assert row.state == "parsed"
     assert row.processing_status == "pending"
-    assert row.processing_error_code == "API_READ_FAILED"
+    assert row.processing_error_code == "API_SERVER_ERROR"
     assert (
         db_session.scalar(
             select(func.count())

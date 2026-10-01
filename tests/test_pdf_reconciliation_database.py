@@ -180,7 +180,15 @@ def test_dry_run_returns_counts_without_writing(db_session: Session) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.method)
-        return httpx.Response(200, json={"data": [row], "totalCount": 1, "limit": 100, "offset": 0})
+        return httpx.Response(
+            200,
+            json={
+                "data": [row],
+                "totalCount": 1,
+                "limit": int(request.url.params["limit"]),
+                "offset": 0,
+            },
+        )
 
     async def execute():
         settings = AdvboxAuditSettings(advbox_api_token=SecretStr("synthetic-token"))

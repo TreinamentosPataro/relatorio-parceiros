@@ -109,7 +109,7 @@ def test_private_dry_run_is_count_only_and_get_only(tmp_path: Path) -> None:
                     }
                 ],
                 "totalCount": 1,
-                "limit": 100,
+                "limit": int(request.url.params["limit"]),
                 "offset": 0,
             },
         )
@@ -167,7 +167,7 @@ def test_private_dry_run_detects_duplicate_across_source_files(tmp_path: Path) -
                     }
                 ],
                 "totalCount": 1,
-                "limit": 100,
+                "limit": int(request.url.params["limit"]),
                 "offset": 0,
             },
         )

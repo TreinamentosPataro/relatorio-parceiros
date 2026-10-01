@@ -1216,6 +1216,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
     client.post("/portal/logout", data={"csrf": _csrf(list_html)})
     _login(client, "synthetic-admin", "synthetic-long-password-admin")
     upload_html = client.get("/portal/imports/new").text
+    home_admin_html = client.get("/portal/partners").text
     received = client.post(
         "/portal/imports/new",
         data={
@@ -1251,6 +1252,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         "detail": detail_html,
         "password": password_html,
         "upload": upload_html,
+        "home_admin": home_admin_html,
         "batch": batch_html,
         "partner_admin": partner_admin_html,
     }
@@ -1608,3 +1610,71 @@ def test_upload_uses_reference_month_and_refuses_future_month(portal, db_session
     batch = db_session.scalar(select(PdfImportBatch).where(PdfImportBatch.partner_id == partner.id))
     assert batch.period_start == today.replace(day=1)
     assert batch.period_end == today
+
+
+def test_api_failure_after_parse_offers_retry_and_shows_on_home(portal, db_session) -> None:
+    # Reproduces the pilot case: the parser already flagged the batch for review,
+    # then every Advbox read attempt failed. It must not read "no process found".
+    client, partner, _, _ = portal
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=500,
+        page_count=7,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        parser_version="advbox-manifest-1",
+        parsed_item_count=5,
+        state="needs_review",
+        processing_status="failed",
+        processing_attempt_count=3,
+        processing_error_code="API_READ_FAILED",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get(f"/portal/imports/{batch.id}").text
+    assert "Não foi possível conferir este PDF" in page
+    assert "Nenhum processo foi encontrado" not in page
+    assert "Descartar envio" in page
+    home = client.get("/portal/partners").text
+    assert "Precisa da sua atenção" in home
+    assert "A conferência no Advbox falhou" in home
+    assert f"/portal/imports/{batch.id}" in home
+    retried = client.post(
+        f"/portal/imports/{batch.id}/review/reprocess",
+        data={"csrf": _csrf(page), "revision": "0", "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert retried.status_code == 303
+    db_session.refresh(batch)
+    assert batch.processing_status == "pending" and batch.processing_attempt_count == 0
+    home = client.get("/portal/partners").text
+    assert "Em andamento" in home and "Conferindo no Advbox" in home
+
+
+def test_home_offers_upload_to_admins_only_with_themed_month_grid(portal) -> None:
+    from partner_reports.web.routes.portal import _today
+
+    client, partner, _, version = portal
+    _login(client)
+    viewer_home = client.get("/portal/partners").text
+    assert 'action="/portal/imports/new"' not in viewer_home
+    assert "Precisa da sua atenção" not in viewer_home
+    assert "Relatórios prontos" in viewer_home
+    assert f"versions/{version.id}/pdf" in viewer_home
+    client.post("/portal/logout", data={"csrf": _csrf(viewer_home)})
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    home = client.get("/portal/partners").text
+    assert 'action="/portal/imports/new"' in home
+    assert 'type="month"' not in home
+    assert home.count('name="period_month"') == 12
+    assert f'value="{_today():%Y-%m}" checked' in home
+    assert f'<option value="{partner.id}"' in home

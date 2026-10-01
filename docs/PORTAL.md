@@ -12,7 +12,8 @@ O login tem limite de cinco falhas por janela de 15 minutos por endereço técni
 
 Desde 01/10/2026, a advogada (conta `portal_admin` individual) usa um único caminho:
 
-1. **Novo relatório** (`/portal/imports/new`, opcionalmente `?parceiro=<id>`): escolhe o parceiro, o **mês de referência** e o PDF exportado do módulo Parceiros. O período vai do dia 1 ao fim do mês; no mês corrente, termina hoje (D-053). Mês futuro é recusado. Reenviar o mesmo arquivo leva ao envio já existente, sem erro.
+0. **Início** (`/portal/partners`): painel com o formulário de novo relatório, "Precisa da sua atenção" (pendências, pronto para aprovar, falhas, geração falha ou não feita), "Em andamento", "Relatórios prontos" e a lista de parceiros. Quem só consulta vê os relatórios prontos e a lista. O menu tem apenas Início, Envios e Parceiros.
+1. **Novo relatório** (no Início ou em `/portal/imports/new?parceiro=<id>`): escolhe o parceiro, o **mês de referência** numa grade dos últimos 12 meses e o PDF exportado do módulo Parceiros. O período vai do dia 1 ao fim do mês; no mês corrente, termina hoje (D-053). Mês futuro é recusado. Reenviar o mesmo arquivo leva ao envio já existente, sem erro.
 2. **Página do envio** (`/portal/imports/{id}`): mostra as etapas *Envio recebido → Conferência no Advbox → Aprovação → Relatório pronto* e se atualiza sozinha a cada 15 segundos enquanto o worker trabalha. Cada situação tem uma ação:
    - pendências: tabela com página do PDF, número/pasta, problema e o que fazer; botões **Conferir de novo** (relê o Advbox depois da correção) e **Descartar envio**;
    - tudo encontrado: botão único **Aprovar e gerar relatório**, que aprova, substitui um envio já aprovado do mesmo período, se houver só um, e enfileira a geração;

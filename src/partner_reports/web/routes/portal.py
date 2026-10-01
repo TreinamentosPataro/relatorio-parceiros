@@ -333,7 +333,8 @@ def _batch_stage(
     if version is not None and version.status in {"validated", "published"}:
         return "done"
     if batch.state == "failed" or (
-        batch.state in {"quarantined", "parsed"} and batch.processing_status == "failed"
+        batch.state in {"quarantined", "parsed", "needs_review"}
+        and batch.processing_status == "failed"
     ):
         return "failed"
     if batch.state == "needs_review":
@@ -349,6 +350,107 @@ def _batch_stage(
             return "generation_failed"
         return "approved"
     return "processing"
+
+
+def _work_queue(db: Session, settings: Settings) -> tuple[list[dict], list[dict], list[dict]]:
+    """Home dashboard: uploads needing a person, uploads the system is handling, ready reports."""
+
+    attention: list[dict] = []
+    in_progress: list[dict] = []
+    rows = db.execute(
+        select(PdfImportBatch, Partner)
+        .join(Partner, Partner.id == PdfImportBatch.partner_id)
+        .where(
+            partner_scope_clause(settings),
+            PdfImportBatch.state.notin_(("rejected", "superseded", "failed")),
+        )
+        .order_by(PdfImportBatch.created_at.desc())
+        .limit(30)
+    ).all()
+    for batch, partner in rows:
+        item = {"batch": batch, "partner": partner}
+        processing = batch.processing_status
+        if processing == "failed" and batch.state in {"quarantined", "parsed", "needs_review"}:
+            attention.append(
+                {**item, "label": "A conferência no Advbox falhou", "action": "Tentar novamente"}
+            )
+        elif batch.state not in {"needs_review", "approved"} or processing in {
+            "pending",
+            "running",
+        }:
+            in_progress.append({**item, "label": "Conferindo no Advbox"})
+        elif batch.state == "needs_review":
+            run = db.scalar(
+                select(PdfReconciliationRun)
+                .where(PdfReconciliationRun.batch_id == batch.id)
+                .order_by(PdfReconciliationRun.created_at.desc())
+                .limit(1)
+            )
+            pending = (
+                run.result_total - run.matched_count if run is not None else batch.parsed_item_count
+            )
+            if pending:
+                attention.append(
+                    {
+                        **item,
+                        "label": f"{pending} processo(s) precisam de correção",
+                        "action": "Ver pendências",
+                    }
+                )
+            else:
+                attention.append(
+                    {**item, "label": "Pronto para aprovar", "action": "Aprovar e gerar"}
+                )
+        else:
+            generation = db.scalar(
+                select(ReportGenerationRequest)
+                .where(ReportGenerationRequest.pdf_batch_id == batch.id)
+                .order_by(
+                    ReportGenerationRequest.status.in_(("pending", "running")).desc(),
+                    ReportGenerationRequest.created_at.desc(),
+                )
+                .limit(1)
+            )
+            if generation is not None and generation.status in {"pending", "running"}:
+                in_progress.append({**item, "label": "Gerando o relatório"})
+            elif generation is not None and generation.status == "failed":
+                attention.append(
+                    {**item, "label": "A geração do relatório falhou", "action": "Gerar novamente"}
+                )
+            elif (
+                db.scalar(
+                    select(ReportVersion.id)
+                    .where(
+                        ReportVersion.pdf_batch_id == batch.id,
+                        ReportVersion.status.in_(("validated", "published")),
+                    )
+                    .limit(1)
+                )
+                is None
+            ):
+                attention.append(
+                    {
+                        **item,
+                        "label": "Aprovado, relatório ainda não gerado",
+                        "action": "Gerar relatório",
+                    }
+                )
+    ready = [
+        {"version": version, "partner": partner}
+        for version, partner in db.execute(
+            select(ReportVersion, Partner)
+            .join(Partner, Partner.id == ReportVersion.partner_id)
+            .where(
+                partner_scope_clause(settings),
+                Partner.status == "active",
+                Partner.deleted_at.is_(None),
+                ReportVersion.status.in_(("validated", "published")),
+            )
+            .order_by(ReportVersion.generated_at.desc())
+            .limit(6)
+        ).all()
+    ]
+    return attention, in_progress, ready
 
 
 def _catalog(db: Session, query: str, status: str, settings: Settings) -> list[dict]:
@@ -438,6 +540,40 @@ def _month_period(value: str) -> tuple[date, date]:
     return start, min(end, today)
 
 
+_MONTH_ABBREVIATIONS = (
+    "jan",
+    "fev",
+    "mar",
+    "abr",
+    "mai",
+    "jun",
+    "jul",
+    "ago",
+    "set",
+    "out",
+    "nov",
+    "dez",
+)
+
+
+def _recent_months(count: int = 12) -> list[dict[str, str]]:
+    """Month buttons for the upload form, newest first (the browser picker is not themable)."""
+
+    today = _today()
+    months = []
+    year, month = today.year, today.month
+    for _ in range(count):
+        months.append(
+            {
+                "value": f"{year:04d}-{month:02d}",
+                "label": _MONTH_ABBREVIATIONS[month - 1],
+                "year": str(year),
+            }
+        )
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+    return months
+
+
 def _upload_page(
     db: Session,
     user: AppUser,
@@ -448,14 +584,13 @@ def _upload_page(
     error: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    current = _today().strftime("%Y-%m")
     response = _render(
         "pdf_upload.html.j2",
         user=user,
         csrf=csrf,
         partners=_active_partners(db, settings),
         selected=selected,
-        current_month=current,
+        months=_recent_months(),
         error=error,
         max_mib=MAX_PDF_BYTES // (1024 * 1024),
         **_nav(db, user, settings, "new"),
@@ -717,6 +852,9 @@ def partners(
     if page > total_pages:
         page = total_pages
     shown = rows[(page - 1) * _PAGE_SIZE : page * _PAGE_SIZE]
+    settings = request.app.state.settings
+    nav = _nav(db, user, settings, "partners")
+    attention, in_progress, ready = _work_queue(db, settings)
     response = _render(
         "partners.html.j2",
         user=user,
@@ -727,8 +865,15 @@ def partners(
         page=page,
         total_pages=total_pages,
         total=len(rows),
-        demo=request.app.state.settings.synthetic_validation_only,
-        **_nav(db, user, request.app.state.settings, "partners"),
+        demo=settings.synthetic_validation_only,
+        attention=attention if nav["is_admin"] else [],
+        in_progress=in_progress if nav["is_admin"] else [],
+        ready=ready,
+        upload_partners=_active_partners(db, settings) if nav["is_admin"] else [],
+        months=_recent_months(),
+        selected=None,
+        max_mib=MAX_PDF_BYTES // (1024 * 1024),
+        **nav,
     )
     _audit_commit(db, request, "catalog_view", actor_user_id=user.id)
     return response

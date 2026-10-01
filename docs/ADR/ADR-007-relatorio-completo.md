@@ -41,3 +41,10 @@ Atualização de 01/10/2026: as regras dos indicadores, o cálculo sobre o valor
 - O relatório passa a conter dados pessoais e financeiros. Os testes de privacidade deixam de exigir ausência de nome e número e passam a garantir a ausência dos campos do item 3.
 - O título do último andamento é texto livre e pode conter dado sensível digitado no Advbox. A advogada confere o relatório antes de enviá-lo ao parceiro.
 - A leitura da API passa a incluir clientes, últimos andamentos e lançamentos financeiros dos processos da carteira, sempre GET-only, com o limite de 20 GET/min.
+
+## Desempenho e robustez da leitura (01/10/2026)
+
+- O primeiro envio real falhou nas três tentativas com erro genérico de leitura. O diagnóstico GET local leu sem erro processos, andamentos e todos os lançamentos; a causa provável é a exigência de duas leituras idênticas de **todos** os processos do escritório, que falha quando qualquer processo é editado durante a leitura (comum em horário de expediente; já observado no PDF-7).
+- Agora só os processos com número ou pasta presentes no PDF precisam coincidir entre as duas leituras; edições em outros processos não interferem. Mudança nesses processos continua recusando a leitura (`API_SOURCE_CHANGED`).
+- Páginas de 1.000 registros na leitura de processos e lançamentos lidos por processo (`lawsuit_id`), com recusa se vier registro de outro processo. Para uma carteira de 5 processos, o processamento caiu de cerca de 11 min (≈220 GET) para cerca de 1 min (26 GET).
+- O lote com falha registra o motivo (`API_SOURCE_CHANGED`, `API_AUTH_FAILED`, `API_RATE_LIMITED`, `API_SERVER_ERROR`, `API_TRANSPORT_FAILED`, `API_NOT_FOUND`, `API_CONTRACT_MISMATCH`) e a página do envio oferece "Tentar novamente" também quando o PDF já estava aguardando aprovação.

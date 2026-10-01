@@ -11,13 +11,20 @@ from enum import StrEnum
 from pydantic import ValidationError
 
 from partner_reports.contracts.ingestion import AdvboxLawsuitInput
-from partner_reports.integrations.advbox.client import AdvboxClient, AdvboxUnexpectedResponse
+from partner_reports.integrations.advbox.client import (
+    MAX_PAGE_SIZE,
+    AdvboxClient,
+    AdvboxSourceChanged,
+    AdvboxUnexpectedResponse,
+)
 from partner_reports.integrations.advbox.normalize import normalize_record, report_hash
 from partner_reports.jobs.sync import PAGE_SIZE, _page
 from partner_reports.pdf_imports.identifiers import normalize_folder, normalize_process_number
 from partner_reports.pdf_imports.parser import ManifestItem
 
 MAX_SNAPSHOT_ITEMS = 100_000
+# Large pages cut a full lawsuit read from ~44 to ~5 requests at 20 GET/min.
+SNAPSHOT_PAGE_SIZE = MAX_PAGE_SIZE
 
 
 class MatchStatus(StrEnum):
@@ -115,12 +122,16 @@ async def advance_scan(client: AdvboxClient, checkpoint: ScanCheckpoint) -> Scan
         return checkpoint
     if checkpoint.next_offset != len(checkpoint.candidates):
         raise ValueError("checkpoint técnico inconsistente")
-    response = await client.list_page("lawsuits", limit=PAGE_SIZE, offset=checkpoint.next_offset)
+    response = await client.list_page(
+        "lawsuits", limit=SNAPSHOT_PAGE_SIZE, offset=checkpoint.next_offset
+    )
     records, total = _page(
-        response.payload, requested_offset=checkpoint.next_offset, requested_limit=PAGE_SIZE
+        response.payload,
+        requested_offset=checkpoint.next_offset,
+        requested_limit=SNAPSHOT_PAGE_SIZE,
     )
     if checkpoint.expected_total is not None and total != checkpoint.expected_total:
-        raise AdvboxUnexpectedResponse("totalCount mudou durante a fotografia")
+        raise AdvboxSourceChanged("totalCount mudou durante a fotografia")
     if total > MAX_SNAPSHOT_ITEMS:
         raise AdvboxUnexpectedResponse("fotografia excede o limite técnico")
     projected = tuple(_project_lawsuit(raw) for raw in records)
@@ -167,17 +178,53 @@ def require_snapshot_integrity(snapshot: ApiSnapshot) -> None:
         raise ValueError("fotografia técnica inconsistente")
 
 
+@dataclass(frozen=True)
+class RelevantKeys:
+    """Manifest identifiers whose lawsuits must be stable across the two reads."""
+
+    process_numbers: frozenset[str] = field(repr=False)
+    folders: frozenset[str] = field(repr=False)
+
+    @classmethod
+    def from_manifest(cls, items: tuple[ManifestItem, ...]) -> "RelevantKeys":
+        return cls(
+            frozenset(
+                item.process_number_normalized for item in items if item.process_number_normalized
+            ),
+            frozenset(item.folder_exact for item in items if item.folder_exact),
+        )
+
+    def select(self, candidates: tuple[ApiCandidate, ...]) -> tuple[ApiCandidate, ...]:
+        return tuple(
+            candidate
+            for candidate in candidates
+            if candidate.process_number_normalized in self.process_numbers
+            or candidate.folder_exact in self.folders
+        )
+
+
 async def collect_verified_snapshot(
-    client: AdvboxClient, checkpoint: ScanCheckpoint | None = None
+    client: AdvboxClient,
+    checkpoint: ScanCheckpoint | None = None,
+    *,
+    relevant: RelevantKeys | None = None,
 ) -> ApiSnapshot:
-    """Require two identical complete reads; offset pagination is not an atomic API snapshot."""
+    """Require two complete reads that agree; offset pagination is not an atomic snapshot.
+
+    With `relevant`, only the lawsuits sharing a number or folder with the manifest must
+    agree: other lawsuits edited by the office during the read do not affect the result.
+    """
     first = await scan_to_end(client, checkpoint)
     second = await scan_to_end(client)
-    if first.expected_total != second.expected_total:
-        raise AdvboxUnexpectedResponse("totalCount mudou entre leituras")
+    if relevant is None:
+        if first.expected_total != second.expected_total:
+            raise AdvboxSourceChanged("totalCount mudou entre leituras")
+        compared = (first.candidates, second.candidates)
+    else:
+        compared = (relevant.select(first.candidates), relevant.select(second.candidates))
     first_digest = _snapshot_digest(first.candidates)
-    if first_digest != _snapshot_digest(second.candidates):
-        raise AdvboxUnexpectedResponse("origem mudou entre leituras")
+    if _snapshot_digest(compared[0]) != _snapshot_digest(compared[1]):
+        raise AdvboxSourceChanged("origem mudou entre leituras")
     return ApiSnapshot(first_digest, first.expected_total or 0, datetime.now(UTC), first.candidates)
 
 

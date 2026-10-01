@@ -154,7 +154,10 @@ def request_reprocessing(
     settings: Settings | None = None,
 ) -> PdfImportReview:
     batch = _locked_batch(db, batch_id, revision, environment, settings)
-    if batch.state in {"quarantined", "parsed"} and batch.processing_status == "failed":
+    if (
+        batch.state in {"quarantined", "parsed", "needs_review"}
+        and batch.processing_status == "failed"
+    ):
         # Automatic attempts are exhausted; the same PDF cannot be uploaded again.
         review = _record(db, batch, actor_id, "reprocess_requested", "PROCESSING_RETRY")
     elif batch.state == "needs_review":

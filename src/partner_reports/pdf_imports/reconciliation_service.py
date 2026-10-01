@@ -21,6 +21,7 @@ from partner_reports.pdf_imports.reconciliation import (
     MatchResult,
     MatchStatus,
     ReconciliationSummary,
+    RelevantKeys,
     collect_verified_snapshot,
     reconcile_items,
     require_snapshot_integrity,
@@ -256,6 +257,15 @@ async def dry_run_batch(
     items = _manifest(db, batch)
     snapshot = await collect_verified_snapshot(client)
     return summarize(reconcile_items(items, snapshot))
+
+
+def manifest_keys(db: Session, batch_id: uuid.UUID) -> RelevantKeys:
+    """Numbers and folders of the PDF; only these lawsuits must be stable across reads."""
+
+    batch = db.get(PdfImportBatch, batch_id)
+    if batch is None or batch.state not in {PdfBatchState.PARSED, PdfBatchState.NEEDS_REVIEW}:
+        raise ValueError("lote indisponível para reconciliação")
+    return RelevantKeys.from_manifest(_manifest(db, batch))
 
 
 def matched_lawsuit_ids(db: Session, batch_id: uuid.UUID, snapshot: ApiSnapshot) -> set[int]:

@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from partner_reports.integrations.advbox.client import (
     AdvboxClient,
+    AdvboxSourceChanged,
     AdvboxTransportError,
     AdvboxUnexpectedResponse,
     ConservativeRateLimiter,
@@ -17,10 +18,12 @@ from partner_reports.integrations.advbox.client import (
 from partner_reports.integrations.advbox.config import AdvboxAuditSettings
 from partner_reports.pdf_imports.parser import ManifestItem
 from partner_reports.pdf_imports.reconciliation import (
+    SNAPSHOT_PAGE_SIZE,
     ApiCandidate,
     ApiSnapshot,
     MatchMethod,
     MatchStatus,
+    RelevantKeys,
     ScanCheckpoint,
     _snapshot_digest,
     advance_scan,
@@ -128,7 +131,15 @@ def test_two_pass_snapshot_retries_and_only_gets() -> None:
             return httpx.Response(429, headers={"Retry-After": "2"})
         if len(seen) == 2:
             raise httpx.ReadTimeout("synthetic timeout")
-        return httpx.Response(200, json={"data": rows, "totalCount": 1, "limit": 100, "offset": 0})
+        return httpx.Response(
+            200,
+            json={
+                "data": rows,
+                "totalCount": 1,
+                "limit": int(request.url.params["limit"]),
+                "offset": 0,
+            },
+        )
 
     async def fake_sleep(seconds: float) -> None:
         delays.append(seconds)
@@ -154,22 +165,24 @@ def test_two_pass_snapshot_retries_and_only_gets() -> None:
 
 
 def test_changed_origin_blocks_snapshot_and_resume_uses_checkpoint() -> None:
-    rows = [_api_row(index, folder=f"PASTA-{index:03d}") for index in range(1, 102)]
+    rows = [
+        _api_row(index, folder=f"PASTA-{index:03d}") for index in range(1, SNAPSHOT_PAGE_SIZE + 2)
+    ]
     calls: list[int] = []
     failed = [False]
 
     def handler(request: httpx.Request) -> httpx.Response:
         offset = int(request.url.params["offset"])
         calls.append(offset)
-        if offset == 100 and not failed[0]:
+        if offset == SNAPSHOT_PAGE_SIZE and not failed[0]:
             failed[0] = True
             raise httpx.ReadTimeout("synthetic timeout")
         return httpx.Response(
             200,
             json={
-                "data": rows[offset : offset + 100],
+                "data": rows[offset : offset + SNAPSHOT_PAGE_SIZE],
                 "totalCount": len(rows),
-                "limit": 100,
+                "limit": SNAPSHOT_PAGE_SIZE,
                 "offset": offset,
             },
         )
@@ -185,13 +198,13 @@ def test_changed_origin_blocks_snapshot_and_resume_uses_checkpoint() -> None:
             checkpoint = await advance_scan(client, ScanCheckpoint())
             with pytest.raises(AdvboxTransportError):
                 await advance_scan(client, checkpoint)
-            assert checkpoint.next_offset == 100
+            assert checkpoint.next_offset == SNAPSHOT_PAGE_SIZE
             return await collect_verified_snapshot(client, checkpoint)
         finally:
             await client.aclose()
 
     snapshot = asyncio.run(run())
-    assert snapshot.total == 101
+    assert snapshot.total == SNAPSHOT_PAGE_SIZE + 1
     assert calls.count(0) == 2  # First page checkpoint, then full verification pass.
 
     changing = [0]
@@ -201,7 +214,12 @@ def test_changed_origin_blocks_snapshot_and_resume_uses_checkpoint() -> None:
         folder = "PASTA-01" if changing[0] == 1 else "PASTA-02"
         return httpx.Response(
             200,
-            json={"data": [_api_row(1, folder=folder)], "totalCount": 1, "limit": 100, "offset": 0},
+            json={
+                "data": [_api_row(1, folder=folder)],
+                "totalCount": 1,
+                "limit": int(request.url.params["limit"]),
+                "offset": 0,
+            },
         )
 
     async def reject() -> None:
@@ -241,7 +259,13 @@ def test_official_enrichment_returns_only_related_counts() -> None:
         paths.append(resource)
         rows = resources[resource]
         return httpx.Response(
-            200, json={"data": rows, "totalCount": len(rows), "limit": 100, "offset": 0}
+            200,
+            json={
+                "data": rows,
+                "totalCount": len(rows),
+                "limit": int(request.url.params["limit"]),
+                "offset": 0,
+            },
         )
 
     async def execute():
@@ -269,7 +293,7 @@ def test_matching_person_name_in_api_never_becomes_a_key() -> None:
             json={
                 "data": [_api_row(1, name="Synthetic Person")],
                 "totalCount": 1,
-                "limit": 100,
+                "limit": int(request.url.params["limit"]),
                 "offset": 0,
             },
         )
@@ -303,7 +327,7 @@ def test_snapshot_item_limit_fails_closed(monkeypatch) -> None:
             json={
                 "data": [_api_row(1, folder="PASTA-01")],
                 "totalCount": 1,
-                "limit": 100,
+                "limit": int(request.url.params["limit"]),
                 "offset": 0,
             },
         )
@@ -317,3 +341,48 @@ def test_snapshot_item_limit_fails_closed(monkeypatch) -> None:
             await client.aclose()
 
     asyncio.run(execute())
+
+
+def test_only_manifest_lawsuits_must_agree_between_reads() -> None:
+    number = "12345678920261234567"
+    keys = RelevantKeys.from_manifest((_item(number, "PASTA-01"),))
+    reads = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reads[0] += 1
+        second = reads[0] > 1
+        rows = [
+            _api_row(1, number="1234567-89.2026.1.23.4567", folder="PASTA-01"),
+            # Another lawsuit edited (and one created) by the office between reads.
+            _api_row(2, folder="OUTRA-PASTA-EDITADA" if second else "OUTRA-PASTA"),
+            *([_api_row(3, folder="NOVA")] if second else []),
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "data": rows,
+                "totalCount": len(rows),
+                "limit": int(request.url.params["limit"]),
+                "offset": 0,
+            },
+        )
+
+    async def read(relevant: RelevantKeys | None) -> ApiSnapshot:
+        reads[0] = 0
+        client = AdvboxClient(
+            _settings(),
+            transport=httpx.MockTransport(handler),
+            limiter=ConservativeRateLimiter(20, sleep=lambda _: asyncio.sleep(0), clock=lambda: 0),
+        )
+        try:
+            return await collect_verified_snapshot(client, relevant=relevant)
+        finally:
+            await client.aclose()
+
+    snapshot = asyncio.run(read(keys))
+    assert snapshot.total == 2
+    with pytest.raises(AdvboxSourceChanged):
+        asyncio.run(read(None))
+    with pytest.raises(AdvboxSourceChanged):
+        # The manifest lawsuit itself changed: the read is refused.
+        asyncio.run(read(RelevantKeys.from_manifest((_item(None, "OUTRA-PASTA"),))))

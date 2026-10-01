@@ -1,8 +1,8 @@
 """GET-only report data for the reconciled lawsuits of one portfolio (ADR-007).
 
-Only the lawsuits of the uploaded portfolio are kept; every other record read while
-paging is discarded in memory. Financial entries are limited to the categories the
-partner accounting uses.
+Movements and entries are read per portfolio lawsuit (`/movements/{id}` and the
+documented `lawsuit_id` filter of `/transactions`); a record of any other lawsuit
+aborts the read. Financial entries are limited to the accounting categories.
 """
 
 from collections.abc import Collection
@@ -11,9 +11,13 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from partner_reports.contracts.ingestion import AdvboxMovementInput, AdvboxTransactionInput
-from partner_reports.integrations.advbox.client import AdvboxClient, AdvboxUnexpectedResponse
+from partner_reports.integrations.advbox.client import (
+    MAX_PAGE_SIZE,
+    AdvboxClient,
+    AdvboxUnexpectedResponse,
+)
 from partner_reports.integrations.advbox.normalize import normalize_record
-from partner_reports.jobs.sync import PAGE_SIZE, _page
+from partner_reports.jobs.sync import _page
 from partner_reports.reports.financial import classify_entry
 
 MAX_TRANSACTIONS = 200_000
@@ -54,27 +58,33 @@ async def collect_portfolio_enrichment(
         for lawsuit_id in sorted(wanted)
     }
     kept: dict[int, AdvboxTransactionInput] = {}
-    offset = 0
-    expected_total: int | None = None
-    while wanted and (expected_total is None or offset < expected_total):
-        response = await client.list_page("transactions", limit=PAGE_SIZE, offset=offset)
-        records, total = _page(response.payload, requested_offset=offset, requested_limit=PAGE_SIZE)
-        if expected_total is not None and total != expected_total:
-            raise AdvboxUnexpectedResponse("totalCount de lançamentos mudou durante a leitura")
-        if total > MAX_TRANSACTIONS:
-            raise AdvboxUnexpectedResponse("lançamentos excedem o limite técnico")
-        expected_total = total
-        for raw in records:
-            if raw.get("lawsuit_id") not in wanted:
-                continue
-            try:
-                entry = normalize_record("transactions", raw)
-            except (AdvboxUnexpectedResponse, ValidationError):
-                raise AdvboxUnexpectedResponse("lançamento fora do contrato técnico") from None
-            if classify_entry(entry.entry_type, entry.category) is None:
-                continue
-            if entry.external_id in kept:
-                raise AdvboxUnexpectedResponse("lançamento duplicado na leitura")
-            kept[entry.external_id] = entry
-        offset += len(records)
+    for lawsuit_id in sorted(wanted):
+        offset = 0
+        expected_total: int | None = None
+        while expected_total is None or offset < expected_total:
+            response = await client.lawsuit_transactions_page(
+                lawsuit_id, limit=MAX_PAGE_SIZE, offset=offset
+            )
+            records, total = _page(
+                response.payload, requested_offset=offset, requested_limit=MAX_PAGE_SIZE
+            )
+            if expected_total is not None and total != expected_total:
+                raise AdvboxUnexpectedResponse("totalCount de lançamentos mudou durante a leitura")
+            if total > MAX_TRANSACTIONS:
+                raise AdvboxUnexpectedResponse("lançamentos excedem o limite técnico")
+            expected_total = total
+            for raw in records:
+                # Fail closed if the filter was not applied: another lawsuit never enters.
+                if raw.get("lawsuit_id") != lawsuit_id:
+                    raise AdvboxUnexpectedResponse("filtro por processo não aplicado")
+                try:
+                    entry = normalize_record("transactions", raw)
+                except (AdvboxUnexpectedResponse, ValidationError):
+                    raise AdvboxUnexpectedResponse("lançamento fora do contrato técnico") from None
+                if classify_entry(entry.entry_type, entry.category) is None:
+                    continue
+                if entry.external_id in kept:
+                    raise AdvboxUnexpectedResponse("lançamento duplicado na leitura")
+                kept[entry.external_id] = entry
+            offset += len(records)
     return PortfolioEnrichment(movements, tuple(kept[key] for key in sorted(kept)))

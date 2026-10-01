@@ -9,12 +9,17 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from partner_reports.config import Settings
-from partner_reports.integrations.advbox.client import AdvboxAuditError, AdvboxClient
+from partner_reports.integrations.advbox.client import (
+    AdvboxAuditError,
+    AdvboxClient,
+    advbox_error_code,
+)
 from partner_reports.partner_scope import partner_scope_clause
 from partner_reports.pdf_imports.enrichment import collect_portfolio_enrichment
 from partner_reports.pdf_imports.processing import parse_quarantined_batch
 from partner_reports.pdf_imports.reconciliation import collect_verified_snapshot
 from partner_reports.pdf_imports.reconciliation_service import (
+    manifest_keys,
     matched_lawsuit_ids,
     persist_scoped_reconciliation,
 )
@@ -192,7 +197,9 @@ async def process_one_pdf_import(
             )
             return result
 
-        snapshot = await collect_verified_snapshot(client)
+        with sessions() as db:
+            keys = manifest_keys(db, batch_id)
+        snapshot = await collect_verified_snapshot(client, relevant=keys)
         with sessions() as db:
             portfolio = matched_lawsuit_ids(db, batch_id, snapshot)
         enrichment = await collect_portfolio_enrichment(client, portfolio)
@@ -211,8 +218,8 @@ async def process_one_pdf_import(
             batch.processing_heartbeat_at = None
             batch.processing_error_code = None
         return "succeeded"
-    except AdvboxAuditError:
-        _finish(sessions, batch_id, token, status="failed", error_code="API_READ_FAILED")
+    except AdvboxAuditError as exc:
+        _finish(sessions, batch_id, token, status="failed", error_code=advbox_error_code(exc))
         return "retry"
     except Exception:
         _finish(sessions, batch_id, token, status="failed", error_code="PROCESSING_FAILED")

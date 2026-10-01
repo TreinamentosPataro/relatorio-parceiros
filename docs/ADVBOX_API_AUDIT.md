@@ -275,3 +275,13 @@ Quando `data`, `limit`, `offset` e `totalCount` forem observados, percorrer por 
 - Redirecionamentos de login e HTTP 401 são falhas de autenticação.
 - HTTP 403/404 são classificados explicitamente; HTTP 429 e 5xx usam retentativa limitada.
 - O relatório não contém token, cabeçalhos, URLs com IDs, valores de campos ou respostas brutas.
+
+## Confirmações GET de 01/10/2026 (F3)
+
+Leituras somente GET, com saída restrita a contagens, tipos e tempos; nenhum valor, nome ou identificador foi registrado.
+
+- `limit` até 1000 por página, conforme a documentação oficial: a resposta ecoa `limit=1000`. Duas leituras completas de `/lawsuits` (4.384 processos) levaram 33 s a 20 GET/min, contra cerca de 4 min com páginas de 100.
+- `/transactions?lawsuit_id={id}`: o filtro exato documentado é aplicado; em cinco processos, todos os registros devolvidos pertenciam ao processo pedido e o total coincidiu com a contagem da leitura global.
+- `/movements/{lawsuit_id}`: lido e normalizado sem erro em cinco processos.
+- Varredura completa de `/transactions` (13.145 lançamentos): zero erro de contrato, zero HTTP 429/5xx. `is_internal` veio verdadeiro em todos os lançamentos de uma amostra de 100 e não distingue registro restrito; `entry_type` vale `income` ou `expense` e o valor vem sempre positivo.
+- Limite oficial de 30 GET/min (página de autenticação da documentação); o projeto mantém 20 GET/min como margem.
