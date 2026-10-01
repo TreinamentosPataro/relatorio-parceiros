@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from jinja2 import Environment, StrictUndefined, select_autoescape
+from jinja2 import Environment, FunctionLoader, StrictUndefined, select_autoescape
 from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -85,7 +85,11 @@ from partner_reports.web.security import (
 )
 
 router = APIRouter()
+_ASSETS = files("partner_reports.web")
 _TEMPLATES = Environment(
+    loader=FunctionLoader(
+        lambda name: _ASSETS.joinpath("templates", name).read_text(encoding="utf-8")
+    ),
     autoescape=select_autoescape(default=True),
     undefined=StrictUndefined,
     trim_blocks=True,
@@ -95,13 +99,13 @@ _LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
 _BATCH_STATE_LABELS = {
     "all": "Todos",
     "uploaded": "Recebido",
-    "quarantined": "Aguardando processamento",
-    "parsing": "Lendo PDF",
-    "parsed": "PDF lido",
-    "reconciling": "Conferindo no Advbox",
-    "needs_review": "Em revisão",
+    "quarantined": "Em conferência",
+    "parsing": "Em conferência",
+    "parsed": "Em conferência",
+    "reconciling": "Em conferência",
+    "needs_review": "Aguardando aprovação",
     "approved": "Aprovado",
-    "rejected": "Rejeitado",
+    "rejected": "Descartado",
     "failed": "Falhou",
     "superseded": "Substituído",
 }
@@ -143,7 +147,11 @@ _TEMPLATES.filters["conferencia"] = lambda value: {
     "process_number_exact": "Número do processo",
     "folder_exact_unique": "Pasta",
 }.get(value, value)
-_ASSETS = files("partner_reports.web")
+_TEMPLATES.filters["cnj"] = lambda value: (
+    f"{value[:7]}-{value[7:9]}.{value[9:13]}.{value[13]}.{value[14:16]}.{value[16:]}"
+    if value and len(value) == 20 and value.isdigit()
+    else value
+)
 _PAGE_SIZE = 10
 _PARTNER_NAME_MAX = 120
 _VERSION_LABELS = {
@@ -295,6 +303,44 @@ def _status(
     return "atualizado"
 
 
+_BATCH_NOTICES = {
+    "geracao": "O envio foi aprovado, mas o relatório não pôde ser gerado agora.",
+    "conflito": "A página estava desatualizada. Confira a situação abaixo e tente novamente.",
+}
+
+
+def _batch_stage(
+    batch: PdfImportBatch,
+    approval_blocked: bool,
+    issues: list,
+    version: ReportVersion | None,
+    generation: ReportGenerationRequest | None,
+) -> str:
+    """One plain-language step of the upload → report flow."""
+
+    if batch.state in {"rejected", "superseded"}:
+        return batch.state
+    if version is not None and version.status in {"validated", "published"}:
+        return "done"
+    if batch.state == "failed" or (
+        batch.state in {"quarantined", "parsed"} and batch.processing_status == "failed"
+    ):
+        return "failed"
+    if batch.state == "needs_review":
+        if batch.processing_status in {"pending", "running"}:
+            return "processing"
+        if issues:
+            return "issues"
+        return "blocked" if approval_blocked else "ready"
+    if batch.state == "approved":
+        if generation is not None and generation.status in {"pending", "running"}:
+            return "generating"
+        if generation is not None and generation.status == "failed":
+            return "generation_failed"
+        return "approved"
+    return "processing"
+
+
 def _catalog(db: Session, query: str, status: str, settings: Settings) -> list[dict]:
     partners = db.scalars(
         select(Partner)
@@ -358,22 +404,51 @@ def _active_partners(db: Session, settings: Settings) -> list[Partner]:
     ).all()
 
 
+def _nav(db: Session, user: AppUser, settings: Settings, active: str) -> dict:
+    is_admin = "portal_admin" in get_user_roles(db, user.id)
+    return {
+        "nav": active,
+        "is_admin": is_admin,
+        "partner_admin_link": is_admin and not settings.synthetic_validation_only,
+    }
+
+
+def _today() -> date:
+    return datetime.now(_LOCAL_ZONE).date()
+
+
+def _month_period(value: str) -> tuple[date, date]:
+    # A month still in progress ends today: the official read must not precede it (D-053).
+    start = date.fromisoformat(f"{value}-01")
+    today = _today()
+    if start > today:
+        raise ValueError
+    following = date(start.year + start.month // 12, start.month % 12 + 1, 1)
+    end = date.fromordinal(following.toordinal() - 1)
+    return start, min(end, today)
+
+
 def _upload_page(
     db: Session,
     user: AppUser,
     csrf: str,
     settings: Settings,
     *,
+    selected: uuid.UUID | None = None,
     error: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
+    current = _today().strftime("%Y-%m")
     response = _render(
         "pdf_upload.html.j2",
         user=user,
         csrf=csrf,
         partners=_active_partners(db, settings),
+        selected=selected,
+        current_month=current,
         error=error,
         max_mib=MAX_PDF_BYTES // (1024 * 1024),
+        **_nav(db, user, settings, "new"),
     )
     response.status_code = status_code
     return response
@@ -389,7 +464,9 @@ async def _read_pdf_form(request: Request) -> tuple[dict[str, str], UploadFile, 
         form = await request.form(max_files=1, max_fields=8, max_part_size=MAX_PDF_BYTES + 1)
     except Exception as exc:
         raise PdfRejected("FILE_NOT_PDF") from exc
-    expected = {"csrf", "partner_id", "period_start", "period_end", "source_pdf"}
+    expected = {"csrf", "partner_id", "period_month", "source_pdf"}
+    if set(form.keys()) != expected:
+        expected = {"csrf", "partner_id", "period_start", "period_end", "source_pdf"}
     if set(form.keys()) != expected or any(len(form.getlist(key)) != 1 for key in expected):
         raise PdfRejected("FILE_NOT_PDF")
     upload = form.get("source_pdf")
@@ -406,44 +483,6 @@ async def _read_pdf_form(request: Request) -> tuple[dict[str, str], UploadFile, 
         await upload.close()
     fields = {key: str(form[key]) for key in expected - {"source_pdf"}}
     return fields, upload, bytes(body)
-
-
-def _queue(db: Session, partner_id: uuid.UUID, user_id: uuid.UUID, settings: Settings) -> None:
-    # Lock the partner row, making duplicate requests for one partner serializable.
-    db.scalar(select(Partner.id).where(Partner.id == partner_id).with_for_update())
-    batch = db.scalar(
-        select(PdfImportBatch)
-        .where(PdfImportBatch.partner_id == partner_id, PdfImportBatch.state == "approved")
-        .order_by(PdfImportBatch.created_at.desc(), PdfImportBatch.id.desc())
-        .limit(1)
-    )
-    if batch is not None:
-        try:
-            enqueue_approved_batch(
-                db,
-                batch.id,
-                environment=settings.app_env,
-                requested_by=user_id,
-                settings=settings,
-            )
-        except BatchReportUnavailable as exc:
-            raise HTTPException(
-                status_code=409, detail="Geração indisponível para este lote"
-            ) from exc
-        return
-    if not settings.synthetic_validation_only:
-        raise HTTPException(status_code=409, detail="Lote aprovado necessário")
-    active = db.scalar(
-        select(ReportGenerationRequest.id).where(
-            ReportGenerationRequest.partner_id == partner_id,
-            ReportGenerationRequest.status.in_(("pending", "running")),
-        )
-    )
-    if active is None:
-        db.add(
-            ReportGenerationRequest(partner_id=partner_id, requested_by=user_id, status="pending")
-        )
-        db.flush()
 
 
 def _audit_commit(
@@ -678,9 +717,8 @@ def partners(
         page=page,
         total_pages=total_pages,
         total=len(rows),
-        sync_at=_sync_at(db),
-        is_admin="portal_admin" in get_user_roles(db, user.id),
         demo=request.app.state.settings.synthetic_validation_only,
+        **_nav(db, user, request.app.state.settings, "partners"),
     )
     _audit_commit(db, request, "catalog_view", actor_user_id=user.id)
     return response
@@ -701,6 +739,12 @@ def partner_detail(
     latest = next((row for row in versions if row.status in {"validated", "published"}), None)
     latest_request = _latest_requests(db, [partner.id]).get(partner.id)
     state = _status(latest, latest_request, _changed_at(db, [partner.id]).get(partner.id))
+    batches = db.scalars(
+        select(PdfImportBatch)
+        .where(PdfImportBatch.partner_id == partner.id)
+        .order_by(PdfImportBatch.created_at.desc(), PdfImportBatch.id.desc())
+        .limit(5)
+    ).all()
     response = _render(
         "detail.html.j2",
         user=user,
@@ -710,9 +754,9 @@ def partner_detail(
         latest_valid=latest,
         version_labels=_VERSION_LABELS,
         state=state,
-        sync_at=_sync_at(db),
-        is_admin="portal_admin" in get_user_roles(db, user.id),
+        batches=batches,
         demo=request.app.state.settings.synthetic_validation_only,
+        **_nav(db, user, request.app.state.settings, "partners"),
     )
     _audit_commit(
         db,
@@ -726,10 +770,12 @@ def partner_detail(
 
 
 @router.get("/portal/imports/new")
-def pdf_upload_page(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+def pdf_upload_page(
+    request: Request, parceiro: uuid.UUID | None = None, db: Session = _DB_DEPENDENCY
+) -> Response:
     record, user = _need_user(db, request)
     _require_admin(db, user)
-    return _upload_page(db, user, record.csrf_token, request.app.state.settings)
+    return _upload_page(db, user, record.csrf_token, request.app.state.settings, selected=parceiro)
 
 
 @router.post("/portal/imports/new")
@@ -760,8 +806,11 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
 
     try:
         partner_id = uuid.UUID(fields["partner_id"])
-        period_start = date.fromisoformat(fields["period_start"])
-        period_end = date.fromisoformat(fields["period_end"])
+        if "period_month" in fields:
+            period_start, period_end = _month_period(fields["period_month"])
+        else:
+            period_start = date.fromisoformat(fields["period_start"])
+            period_end = date.fromisoformat(fields["period_end"])
         if period_end < period_start:
             raise ValueError
         partner = db.get(Partner, partner_id)
@@ -890,6 +939,11 @@ async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response
         raise
 
     if result.duplicate:
+        existing = db.get(Partner, result.batch.partner_id)
+        if existing is not None and partner_in_scope(request.app.state.settings, existing):
+            return RedirectResponse(
+                f"/portal/imports/{result.batch.id}?repetido=1", status_code=303
+            )
         return _upload_page(
             db,
             user,
@@ -973,12 +1027,17 @@ def pdf_import_list(
         page=page,
         total=total,
         pages=max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE),
+        **_nav(db, user, request.app.state.settings, "imports"),
     )
 
 
 @router.get("/portal/imports/{batch_id}")
 def pdf_import_detail(
-    batch_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
+    batch_id: uuid.UUID,
+    request: Request,
+    repetido: int = 0,
+    aviso: str = "",
+    db: Session = _DB_DEPENDENCY,
 ) -> Response:
     record, user = _need_user(db, request)
     _require_admin(db, user)
@@ -1044,11 +1103,12 @@ def pdf_import_detail(
         set(flags) - {"page_continuation"} for flags in manifest_flags
     )
     pending_reprocess = run is not None and reprocessing_pending(db, batch, run)
+    # A single earlier approval for the same month is replaced by "approve and generate".
     approval_blocked = (
         not run
         or not items
         or pending_reprocess
-        or bool(replacements)
+        or len(replacements) > 1
         or manifest_blocked
         or any(
             item.status != "matched"
@@ -1061,6 +1121,28 @@ def pdf_import_detail(
         )
         or (request.app.state.settings.pdf_four_eyes and batch.uploaded_by == user.id)
     )
+    manifest = {
+        row.id: row
+        for row in db.scalars(select(PdfManifestItem).where(PdfManifestItem.batch_id == batch.id))
+    }
+    issues = [
+        (item, manifest.get(item.manifest_item_id))
+        for item in items
+        if item.status != "matched" and item.id not in corrected_ids
+    ]
+    version = db.scalar(
+        select(ReportVersion)
+        .where(ReportVersion.pdf_batch_id == batch.id)
+        .order_by(ReportVersion.generated_at.desc())
+        .limit(1)
+    )
+    generation = db.scalar(
+        select(ReportGenerationRequest)
+        .where(ReportGenerationRequest.pdf_batch_id == batch.id)
+        .order_by(ReportGenerationRequest.created_at.desc())
+        .limit(1)
+    )
+    stage = _batch_stage(batch, approval_blocked, issues, version, generation)
     return _render(
         "pdf_import_detail.html.j2",
         user=user,
@@ -1070,15 +1152,16 @@ def pdf_import_detail(
         partner=partner,
         run=run,
         items=items,
+        issues=issues,
         reviews=reviews,
-        replacements=replacements,
+        stage=stage,
+        version=version,
+        matched=sum(1 for item in items if item.status == "matched"),
+        repeated=bool(repetido),
+        notice=_BATCH_NOTICES.get(aviso),
         technical_ids=technical_ids,
         corrections_enabled=bool(technical_ids) and not pending_reprocess,
-        approval_blocked=approval_blocked,
-        pending_reprocess=pending_reprocess,
-        synthetic_generation=(
-            batch.state == "approved" and partner_in_scope(request.app.state.settings, partner)
-        ),
+        **_nav(db, user, request.app.state.settings, "imports"),
     )
 
 
@@ -1181,6 +1264,87 @@ async def pdf_review_action(
     return RedirectResponse(f"/portal/imports/{batch_id}", status_code=303)
 
 
+@router.post("/portal/imports/{batch_id}/approve")
+async def approve_and_generate(
+    batch_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    """Approve the upload (replacing a single earlier approval of the month) and queue it."""
+
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    form = await _form(request)
+    _csrf(form, record)
+    if form.get("confirm") != "yes":
+        raise HTTPException(status_code=400, detail="Confirmação necessária")
+    settings = request.app.state.settings
+    page = f"/portal/imports/{batch_id}"
+    try:
+        revision = int(form["revision"])
+        batch = db.get(PdfImportBatch, batch_id)
+        if batch is None or revision < 0:
+            raise ValueError
+        earlier = db.scalars(
+            select(PdfImportBatch.id).where(
+                PdfImportBatch.partner_id == batch.partner_id,
+                PdfImportBatch.period_start == batch.period_start,
+                PdfImportBatch.period_end == batch.period_end,
+                PdfImportBatch.state == "approved",
+                PdfImportBatch.id != batch.id,
+            )
+        ).all()
+        if len(earlier) > 1:
+            raise ValueError
+        approve_batch(
+            db,
+            batch_id,
+            revision,
+            user.id,
+            environment=settings.app_env,
+            four_eyes=settings.pdf_four_eyes,
+            allow_corrections=settings.pdf_synthetic_corrections,
+            replace_batch_id=earlier[0] if earlier else None,
+            settings=settings,
+        )
+        event = record_audit(
+            db,
+            action="pdf_review_superseded" if earlier else "pdf_review_approved",
+            actor_user_id=user.id,
+            entity_type="pdf_import_batch",
+            entity_id=batch_id,
+            correlation_id=request_correlation_id(request),
+        )
+        db.commit()
+        emit_audit(event)
+    except (KeyError, ValueError, ReviewConflict, IntegrityError):
+        db.rollback()
+        return RedirectResponse(f"{page}?aviso=conflito", status_code=303)
+    try:
+        queued = enqueue_approved_batch(
+            db,
+            batch_id,
+            environment=settings.app_env,
+            requested_by=user.id,
+            settings=settings,
+        )
+        event = None
+        if queued:
+            event = record_audit(
+                db,
+                action="generation_requested",
+                actor_user_id=user.id,
+                entity_type="pdf_import_batch",
+                entity_id=batch_id,
+                correlation_id=request_correlation_id(request),
+            )
+        db.commit()
+        if event is not None:
+            emit_audit(event)
+    except (BatchReportUnavailable, IntegrityError):
+        db.rollback()
+        return RedirectResponse(f"{page}?aviso=geracao", status_code=303)
+    return RedirectResponse(page, status_code=303)
+
+
 @router.post("/portal/imports/{batch_id}/generate")
 async def generate_from_pdf_batch(
     batch_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
@@ -1251,6 +1415,9 @@ def _partner_admin_page(
         enabled=sum(1 for partner in partners if partner.pilot_enabled),
         error=error,
         max_name=_PARTNER_NAME_MAX,
+        nav="admin",
+        is_admin=True,
+        partner_admin_link=True,
     )
     response.status_code = status_code
     return response
@@ -1335,51 +1502,6 @@ async def set_partner_pilot(
     else:
         db.rollback()
     return RedirectResponse("/portal/admin/partners", status_code=303)
-
-
-@router.post("/portal/partners/{partner_id}/open")
-async def open_or_queue(
-    partner_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
-) -> Response:
-    record, user = _need_user(db, request)
-    _csrf(await _form(request), record)
-    _require_partner(db, partner_id, request.app.state.settings)
-    version = _latest_versions(db, [partner_id]).get(partner_id)
-    if version and version.status in {"published", "validated"}:
-        return RedirectResponse(
-            f"/portal/partners/{partner_id}/versions/{version.id}/html", status_code=303
-        )
-    _queue(db, partner_id, user.id, request.app.state.settings)
-    _audit_commit(
-        db,
-        request,
-        "generation_requested",
-        actor_user_id=user.id,
-        entity_type="partner",
-        entity_id=partner_id,
-    )
-    return RedirectResponse(f"/portal/partners/{partner_id}", status_code=303)
-
-
-@router.post("/portal/partners/{partner_id}/regenerate")
-async def regenerate(
-    partner_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
-) -> Response:
-    record, user = _need_user(db, request)
-    _csrf(await _form(request), record)
-    if "portal_admin" not in get_user_roles(db, user.id):
-        raise HTTPException(status_code=403, detail="Acesso não autorizado")
-    _require_partner(db, partner_id, request.app.state.settings)
-    _queue(db, partner_id, user.id, request.app.state.settings)
-    _audit_commit(
-        db,
-        request,
-        "generation_requested",
-        actor_user_id=user.id,
-        entity_type="partner",
-        entity_id=partner_id,
-    )
-    return RedirectResponse(f"/portal/partners/{partner_id}", status_code=303)
 
 
 @router.post("/portal/partners/{partner_id}/versions/{version_id}/restore")

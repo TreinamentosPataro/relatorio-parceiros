@@ -1,16 +1,89 @@
 <!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Revisão da importação</title><link rel="stylesheet" href="/portal/assets.css"></head><body>
-<a class="skip-link" href="#main">Ir para o conteúdo</a><header class="site-header"><div class="header-inner"><a class="brand" href="/portal/partners"><span class="brand-mark" aria-hidden="true">P</span><span>Relatórios<span class="brand-sub">/ Parceiros</span></span></a><div class="header-actions"><span class="user-label">{{ user.display_name or 'Usuário interno' }}</span><a class="text-button" href="/portal/account/password">Alterar senha</a><form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">Sair</button></form></div></div></header>
-<main class="container" id="main"><a class="back-link" href="/portal/imports">← Todas as importações</a><div class="page-heading"><div><p class="eyebrow">Importação privada</p><h1>Revisão do lote</h1><p class="muted">{% if batch.state == 'quarantined' and batch.processing_status == 'failed' %}O processamento automático falhou. Veja o código abaixo; o lote pode ser rejeitado e o PDF reenviado.{% elif batch.state == 'quarantined' %}PDF recebido. O processamento automático começa em até 1 minuto; a conferência com o Advbox leva alguns minutos. Atualize a página para acompanhar.{% else %}Esta decisão não publica um relatório.{% endif %}</p></div><span class="status-pill status-large status-exact">{{ batch.state|estado }}</span></div>
-<section class="panel list-panel" aria-label="Metadados técnicos"><div class="table-wrap"><table class="metadata-table"><tbody><tr><th scope="row">Parceiro</th><td data-label="Parceiro">{{ partner.name }}</td></tr><tr><th scope="row">Período</th><td data-label="Período">{{ batch.period_start|data }}–{{ batch.period_end|data }}</td></tr><tr><th scope="row">Recebido</th><td data-label="Recebido">{{ batch.created_at|datahora }}</td></tr><tr><th scope="row">Páginas / itens</th><td data-label="Páginas / itens">{{ source.page_count }} / {{ batch.parsed_item_count if batch.parsed_item_count is not none else 'pendente' }}</td></tr><tr><th scope="row">Processamento</th><td data-label="Processamento">{{ batch.processing_status|processamento }}{% if batch.processing_status == 'failed' and batch.processing_error_code %} · <span class="mono">{{ batch.processing_error_code }}</span>{% endif %}{% if batch.processing_attempt_count %} · tentativa {{ batch.processing_attempt_count }} de 3{% endif %}</td></tr><tr><th scope="row">Identificador do lote</th><td data-label="Lote" class="mono">{{ batch.id }}</td></tr><tr><th scope="row">Revisão</th><td data-label="Revisão">{{ batch.review_revision }}</td></tr></tbody></table></div></section>
-{% if synthetic_generation %}<section class="panel action-panel" aria-label="Gerar prévia sintética"><div><p class="eyebrow">Relatório privado</p><h2>Gerar prévia do lote aprovado</h2><p class="muted">Usa apenas dados estruturados da fotografia sintética. Conteúdo de negócio e publicação real seguem pendentes.</p></div><form method="post" action="/portal/imports/{{ batch.id }}/generate" class="review-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label><input type="checkbox" name="confirm" value="yes" required> Confirmo a geração sintética</label><button class="button button-primary" type="submit">Solicitar relatório</button></form></section>{% endif %}
-{% if run %}<section class="history-section"><div class="section-heading"><h2>Reconciliação</h2><p class="muted">{{ run.result_total }} itens · {{ run.matched_count }} correspondentes · {{ run.unmatched_count }} sem correspondência · {{ run.ambiguous_count }} ambíguos · {{ run.duplicate_source_count }} repetidos · {{ run.invalid_identifier_count }} inválidos</p></div><div class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>Item técnico</th><th>Estado</th><th>Método</th><th>ID técnico</th><th>Motivo</th><th>Correção</th></tr></thead><tbody>
-{% for item in items %}<tr><td data-label="Item" class="mono">{{ item.id }}</td><td data-label="Estado">{{ item.status|conferencia }}</td><td data-label="Método">{{ item.method|conferencia if item.method else '—' }}</td><td data-label="ID técnico">{{ item.matched_advbox_id if item.matched_advbox_id is not none else '—' }}</td><td data-label="Motivo">{{ item.reason_code or '—' }}</td><td data-label="Correção">{% if corrections_enabled and item.status in ('unmatched', 'ambiguous') %}<form method="post" action="/portal/imports/{{ batch.id }}/review/correct" class="review-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="item_id" value="{{ item.id }}"><label for="id-{{ item.id }}">ID existente</label><select id="id-{{ item.id }}" name="advbox_id" required><option value="">Selecione</option>{% for technical_id in technical_ids %}<option value="{{ technical_id }}">{{ technical_id }}</option>{% endfor %}</select><label><input type="checkbox" name="confirm" value="yes" required> Confirmo o ID técnico</label><button class="button button-secondary" type="submit">Corrigir</button></form>{% else %}—{% endif %}</td></tr>{% endfor %}
-</tbody></table></div></div></section>{% endif %}
-{% if batch.state in ('needs_review', 'quarantined', 'parsing') %}<section class="history-section"><h2>Decisões</h2><div class="review-actions">{% if batch.state == 'needs_review' %}
-<form method="post" action="/portal/imports/{{ batch.id }}/review/approve" class="panel review-form"><h3>Aprovar lote</h3><p class="muted">{% if approval_blocked %}Aprovação bloqueada: confira pendências, quatro olhos e lote anterior.{% else %}Exige classificação completa e nenhuma pendência.{% endif %}</p><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><label><input type="checkbox" name="confirm" value="yes" required {% if approval_blocked %}disabled{% endif %}> Conferi a reconciliação</label><button class="button button-primary" type="submit" {% if approval_blocked %}disabled{% endif %}>Aprovar</button></form>
-<form method="post" action="/portal/imports/{{ batch.id }}/review/reprocess" class="panel review-form"><h3>Solicitar reprocessamento</h3><p class="muted">{% if pending_reprocess %}Solicitação pendente para esta reconciliação.{% else %}Registra a solicitação. A execução depende de uma rotina posterior.{% endif %}</p><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><label><input type="checkbox" name="confirm" value="yes" required {% if pending_reprocess %}disabled{% endif %}> Solicito nova reconciliação</label><button class="button button-secondary" type="submit" {% if pending_reprocess %}disabled{% endif %}>Solicitar</button></form>
-{% if replacements %}<form method="post" action="/portal/imports/{{ batch.id }}/review/supersede" class="panel review-form"><h3>Substituir lote aprovado</h3><label for="old_batch_id">Lote anterior</label><select id="old_batch_id" name="old_batch_id" required><option value="">Selecione</option>{% for old in replacements %}<option value="{{ old.id }}">{{ old.id }}</option>{% endfor %}</select><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><label><input type="checkbox" name="confirm" value="yes" required> Confirmo a substituição</label><button class="button button-secondary" type="submit">Substituir e aprovar</button></form>{% endif %}{% endif %}
-<form method="post" action="/portal/imports/{{ batch.id }}/review/reject" class="panel review-form"><h3>Rejeitar lote</h3><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><label><input type="checkbox" name="confirm" value="yes" required> Confirmo a rejeição</label><button class="button button-secondary" type="submit">Rejeitar</button></form></div></section>{% endif %}
-<section class="history-section"><h2>Histórico auditado</h2><div class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>Quando</th><th>Ator técnico</th><th>Ação / motivo</th><th>Item</th><th>Método</th><th>Antes → depois</th></tr></thead><tbody>{% for review in reviews %}<tr><td data-label="Quando">{{ review.created_at|datahora }}</td><td data-label="Ator" class="mono">{{ review.reviewer_user_id }}</td><td data-label="Ação">{{ review.decision }} / {{ review.reason_code }}</td><td data-label="Item" class="mono">{{ review.reconciliation_item_id or '—' }}</td><td data-label="Método">{{ review.method or '—' }}</td><td data-label="Antes e depois">{{ review.before_advbox_id if review.before_advbox_id is not none else '—' }} → {{ review.after_advbox_id if review.after_advbox_id is not none else '—' }}</td></tr>{% else %}<tr><td colspan="6">Ainda não há decisões.</td></tr>{% endfor %}</tbody></table></div></div></section>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{% if stage in ('processing', 'generating') %}<meta http-equiv="refresh" content="15">{% endif %}<title>Envio · {{ partner.name }}</title><link rel="stylesheet" href="/portal/assets.css"></head><body>
+{% include "_header.html.j2" %}
+{% set issue_text = {
+  'unmatched': ('Não encontrado no Advbox', 'Confira se o número ou a pasta está igual no Advbox e clique em “Conferir de novo”.'),
+  'ambiguous': ('Mais de um processo no Advbox com esta identificação', 'Ajuste o número ou a pasta no Advbox para que fique único e clique em “Conferir de novo”.'),
+  'duplicate_source': ('Aparece repetido no PDF', 'Exporte o PDF de novo no Advbox e faça um novo envio.'),
+  'invalid_identifier': ('Número do processo em formato inválido', 'Corrija o número no Advbox, exporte o PDF de novo e faça um novo envio.'),
+} %}
+{% set steps = [('received', 'Envio recebido'), ('check', 'Conferência no Advbox'), ('approve', 'Aprovação'), ('report', 'Relatório pronto')] %}
+{% set position = {'processing': 1, 'failed': 1, 'issues': 2, 'blocked': 2, 'ready': 2, 'approved': 3, 'generating': 3, 'generation_failed': 3, 'done': 4, 'rejected': 0, 'superseded': 0}[stage] %}
+<main class="container" id="main">
+  <a class="back-link" href="/portal/partners/{{ partner.id }}">← {{ partner.name }}</a>
+  <div class="page-heading"><div><p class="eyebrow">Envio de {{ batch.created_at|datahora }}</p><h1>{{ partner.name }}</h1><p class="muted">Período {{ batch.period_start|data }} a {{ batch.period_end|data }}</p></div></div>
+  {% if repeated %}<div class="notice" role="status"><strong>Este PDF já tinha sido enviado.</strong> Veja abaixo a situação do envio.</div>{% endif %}
+  {% if notice %}<div class="notice" role="alert">{{ notice }}</div>{% endif %}
+  {% if position %}<ol class="flow-steps" aria-label="Etapas">{% for key, label in steps %}<li class="{% if loop.index < position or stage == 'done' %}is-done{% elif loop.index == position %}is-current{% endif %}" {% if loop.index == position %}aria-current="step"{% endif %}>{{ label }}</li>{% endfor %}</ol>{% endif %}
+
+  <section class="panel flow-panel" aria-live="polite">
+  {% if stage == 'processing' %}
+    <h2>Conferindo o PDF no Advbox</h2>
+    <p>Estamos lendo os processos do PDF e conferindo cada um no Advbox. Isso costuma levar alguns minutos.</p>
+    <p class="muted">Esta página se atualiza sozinha.</p>
+  {% elif stage == 'failed' %}
+    <h2>Não foi possível conferir este PDF</h2>
+    <p>O processamento automático falhou depois de várias tentativas. Isso costuma ser instabilidade momentânea do Advbox.</p>
+    <div class="action-group">
+      <form method="post" action="/portal/imports/{{ batch.id }}/review/reprocess"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Tentar novamente</button></form>
+      {% if batch.state == 'quarantined' %}<form method="post" action="/portal/imports/{{ batch.id }}/review/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-secondary" type="submit">Descartar envio</button></form>{% endif %}
+    </div>
+  {% elif stage == 'issues' %}
+    <h2>{{ issues|length }} processo{{ 's' if issues|length != 1 else '' }} precisa{{ 'm' if issues|length != 1 else '' }} de correção</h2>
+    <p>{{ matched }} de {{ items|length }} processos do PDF foram encontrados no Advbox. Corrija os itens abaixo para liberar o relatório.</p>
+    <div class="table-wrap"><table><thead><tr><th scope="col">Página do PDF</th><th scope="col">Processo / pasta</th><th scope="col">Problema</th><th scope="col">O que fazer</th></tr></thead><tbody>
+    {% for item, entry in issues %}<tr><td data-label="Página">{{ entry.source_page_start if entry else '—' }}</td><td data-label="Processo / pasta" class="mono">{% if entry and entry.process_number_normalized %}{{ entry.process_number_normalized|cnj }}{% elif entry and entry.folder_exact %}Pasta {{ entry.folder_exact }}{% else %}Sem número{% endif %}</td><td data-label="Problema">{{ issue_text.get(item.status, ('Precisa de conferência', ''))[0] }}</td><td data-label="O que fazer">{{ issue_text.get(item.status, ('', 'Confira o processo no Advbox.'))[1] }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="action-group">
+      <form method="post" action="/portal/imports/{{ batch.id }}/review/reprocess"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Conferir de novo</button></form>
+      <form method="post" action="/portal/imports/{{ batch.id }}/review/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-secondary" type="submit">Descartar envio</button></form>
+    </div>
+  {% elif stage == 'blocked' %}
+    <h2>Não é possível aprovar agora</h2>
+    <p>{% if not items %}Nenhum processo foi encontrado neste PDF. Confira se o arquivo exportado é o relatório do módulo Parceiros.{% else %}Há outro envio aprovado para o mesmo período ou uma conferência em andamento. Atualize a página em alguns minutos.{% endif %}</p>
+    <div class="action-group"><form method="post" action="/portal/imports/{{ batch.id }}/review/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-secondary" type="submit">Descartar envio</button></form></div>
+  {% elif stage == 'ready' %}
+    <h2>Tudo certo para gerar o relatório</h2>
+    <p>Os {{ matched }} processo{{ 's' if matched != 1 else '' }} do PDF foram encontrados no Advbox.</p>
+    <div class="action-group">
+      <form method="post" action="/portal/imports/{{ batch.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Aprovar e gerar relatório</button></form>
+      <form method="post" action="/portal/imports/{{ batch.id }}/review/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-secondary" type="submit">Descartar envio</button></form>
+    </div>
+  {% elif stage == 'approved' %}
+    <h2>Envio aprovado</h2>
+    <p>O relatório ainda não foi gerado para este envio.</p>
+    <div class="action-group"><form method="post" action="/portal/imports/{{ batch.id }}/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Gerar relatório</button></form></div>
+  {% elif stage == 'generating' %}
+    <h2>Gerando o relatório</h2>
+    <p>Isso costuma levar menos de um minuto. Esta página se atualiza sozinha.</p>
+  {% elif stage == 'generation_failed' %}
+    <h2>A geração do relatório falhou</h2>
+    <p>Tente de novo. Se a falha continuar, avise o responsável técnico.</p>
+    <div class="action-group"><form method="post" action="/portal/imports/{{ batch.id }}/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Gerar novamente</button></form></div>
+  {% elif stage == 'done' %}
+    <h2>Relatório pronto</h2>
+    <p>Gerado em {{ version.generated_at|datahora }}. Confira o conteúdo antes de enviar ao parceiro.</p>
+    <div class="action-group"><a class="button button-primary" href="/portal/partners/{{ partner.id }}/versions/{{ version.id }}/html">Ver relatório</a><a class="button button-secondary" href="/portal/partners/{{ partner.id }}/versions/{{ version.id }}/pdf">Baixar PDF</a></div>
+  {% elif stage == 'rejected' %}
+    <h2>Envio descartado</h2>
+    <p>Este envio não gera relatório. Para continuar, faça um novo envio com o PDF exportado do Advbox.</p>
+    <div class="action-group"><a class="button button-primary" href="/portal/imports/new?parceiro={{ partner.id }}">Novo relatório</a></div>
+  {% else %}
+    <h2>Envio substituído</h2>
+    <p>Um envio mais recente do mesmo período substituiu este.</p>
+    <div class="action-group"><a class="button button-primary" href="/portal/partners/{{ partner.id }}">Ver relatórios do parceiro</a></div>
+  {% endif %}
+  </section>
+
+  <details class="technical-details">
+    <summary>Detalhes técnicos</summary>
+    <div class="table-wrap"><table class="metadata-table"><tbody>
+      <tr><th scope="row">Situação</th><td data-label="Situação">{{ batch.state|estado }} · {{ batch.processing_status|processamento }}{% if batch.processing_error_code %} · <span class="mono">{{ batch.processing_error_code }}</span>{% endif %}{% if batch.processing_attempt_count %} · tentativa {{ batch.processing_attempt_count }} de 3{% endif %}</td></tr>
+      <tr><th scope="row">Páginas / itens</th><td data-label="Páginas / itens">{{ source.page_count }} / {{ batch.parsed_item_count if batch.parsed_item_count is not none else 'pendente' }}</td></tr>
+      <tr><th scope="row">Identificador do envio</th><td data-label="Envio" class="mono">{{ batch.id }}</td></tr>
+      {% if run %}<tr><th scope="row">Conferência</th><td data-label="Conferência">{{ run.result_total }} itens · {{ run.matched_count }} encontrados · {{ run.unmatched_count }} não encontrados · {{ run.ambiguous_count }} ambíguos · {{ run.duplicate_source_count }} repetidos · {{ run.invalid_identifier_count }} inválidos</td></tr>{% endif %}
+    </tbody></table></div>
+    {% if corrections_enabled %}{% for item in items if item.status in ('unmatched', 'ambiguous') %}<form method="post" action="/portal/imports/{{ batch.id }}/review/correct" class="review-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="item_id" value="{{ item.id }}"><label for="id-{{ item.id }}">ID existente para o item {{ loop.index }}</label><select id="id-{{ item.id }}" name="advbox_id" required><option value="">Selecione</option>{% for technical_id in technical_ids %}<option value="{{ technical_id }}">{{ technical_id }}</option>{% endfor %}</select><label><input type="checkbox" name="confirm" value="yes" required> Confirmo o ID técnico</label><button class="button button-secondary" type="submit">Corrigir</button></form>{% endfor %}{% endif %}
+    {% if reviews %}<div class="table-wrap"><table><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th></tr></thead><tbody>{% for review in reviews %}<tr><td data-label="Quando">{{ review.created_at|datahora }}</td><td data-label="Decisão">{{ review.decision }} / {{ review.reason_code }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </details>
 </main><footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer></body></html>

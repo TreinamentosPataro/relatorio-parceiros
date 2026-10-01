@@ -8,7 +8,21 @@ O inventário não confirmou SSO corporativo nem proxy de autenticação. Para v
 
 O login tem limite de cinco falhas por janela de 15 minutos por endereço técnico de origem, com chave hash no banco. Sessões de login anônimas expiram em 20 minutos; autenticadas, em oito horas. O token é renovado no login, revogado no logout e nunca guardado em claro no banco. Formulários POST exigem CSRF associado à sessão. A etapa 10 acrescentou CLI autenticado para desativar contas e revogar sessões, limpeza de sessões vencidas e trilha de auditoria. O IP efetivo atrás do proxy da VPS, SSO/MFA, recuperação de conta, retenção e defesa contra abuso ainda precisam de homologação produtiva.
 
-## Fluxo implementado
+## Fluxo de uso diário (F1, ADR-007)
+
+Desde 01/10/2026, a advogada (conta `portal_admin` individual) usa um único caminho:
+
+1. **Novo relatório** (`/portal/imports/new`, opcionalmente `?parceiro=<id>`): escolhe o parceiro, o **mês de referência** e o PDF exportado do módulo Parceiros. O período vai do dia 1 ao fim do mês; no mês corrente, termina hoje (D-053). Mês futuro é recusado. Reenviar o mesmo arquivo leva ao envio já existente, sem erro.
+2. **Página do envio** (`/portal/imports/{id}`): mostra as etapas *Envio recebido → Conferência no Advbox → Aprovação → Relatório pronto* e se atualiza sozinha a cada 15 segundos enquanto o worker trabalha. Cada situação tem uma ação:
+   - pendências: tabela com página do PDF, número/pasta, problema e o que fazer; botões **Conferir de novo** (relê o Advbox depois da correção) e **Descartar envio**;
+   - tudo encontrado: botão único **Aprovar e gerar relatório**, que aprova, substitui um envio já aprovado do mesmo período, se houver só um, e enfileira a geração;
+   - falha do processamento automático: **Tentar novamente**, que zera as tentativas (o mesmo PDF não pode ser reenviado);
+   - relatório pronto: **Ver relatório** e **Baixar PDF**.
+3. **Página do parceiro**: relatório atual com **Ver relatório** e **Baixar PDF**, últimos envios, histórico de versões e restauração de versão anterior recolhida.
+
+Os botões "Solicitar geração" e "Regenerar apenas este parceiro" e as rotas `/open` e `/regenerate` foram removidos: no fluxo com PDF, a geração nasce da aprovação do envio. Identificadores, contagens da conferência e histórico de decisões ficam em **Detalhes técnicos**, recolhidos. A auditoria continua registrando cada ação.
+
+## Fluxo implementado (histórico das etapas 8 a PDF-6)
 
 1. `/portal/login` autentica usuário interno; demais rotas exigem sessão e papel de leitura.
 2. `/portal/partners` lista parceiros ativos, busca por nome/código, filtra situação e pagina dez por página. Exibe a última sincronização global registrada, sem inferir que cada parceiro mudou nesse instante.

@@ -380,7 +380,7 @@ def test_pdf_batch_report_requires_admin_and_checks_artifact_integrity(
     db_session.flush()
     assert _login(client).status_code == 303
     detail = client.get(f"/portal/partners/{partner.id}")
-    assert "Fonte: lote PDF aprovado" in detail.text
+    assert f"versions/{version.id}/pdf" in detail.text
     assert source.storage_object_key not in detail.text
     assert (
         client.post(
@@ -396,7 +396,7 @@ def test_pdf_batch_report_requires_admin_and_checks_artifact_integrity(
     client.post("/portal/logout", data={"csrf": _csrf(detail.text)})
     assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
     batch_detail = client.get(f"/portal/imports/{batch.id}")
-    assert "Solicitar relatório" in batch_detail.text
+    assert "Relatório pronto" in batch_detail.text
     assert (
         client.post(
             f"/portal/imports/{batch.id}/generate",
@@ -606,7 +606,7 @@ def test_pdf6_portal_layout_with_long_synthetic_name(portal, db_session: Session
         "batch": client.get(f"/portal/imports/{batch.id}").text,
     }
     assert "Restaurar v1" in pages["partner"]
-    assert "Solicitar relatório" in pages["batch"]
+    assert "Relatório pronto" in pages["batch"]
     assert source.storage_object_key not in " ".join(pages.values())
     css = client.get("/portal/assets.css").text
 
@@ -645,35 +645,17 @@ def test_pdf6_portal_layout_with_long_synthetic_name(portal, db_session: Session
     asyncio.run(check())
 
 
-def test_missing_report_queues_once_and_regeneration_needs_admin(
-    portal, db_session: Session
-) -> None:
+def test_partner_page_offers_only_the_upload_flow(portal) -> None:
     client, _, partner_b, _ = portal
     _login(client)
     detail = client.get(f"/portal/partners/{partner_b.id}")
-    assert "Sem versões" in detail.text
-    assert (
-        client.post(
-            f"/portal/partners/{partner_b.id}/regenerate", data={"csrf": _csrf(detail.text)}
-        ).status_code
-        == 403
-    )
-    for _ in range(2):
+    assert "Nenhum relatório ainda" in detail.text
+    assert "/portal/imports/new" not in detail.text
+    for retired in ("open", "regenerate"):
         response = client.post(
-            f"/portal/partners/{partner_b.id}/open",
-            data={"csrf": _csrf(detail.text)},
-            follow_redirects=False,
+            f"/portal/partners/{partner_b.id}/{retired}", data={"csrf": _csrf(detail.text)}
         )
-        assert response.status_code == 303
-    assert (
-        db_session.scalar(
-            select(func.count())
-            .select_from(ReportGenerationRequest)
-            .where(ReportGenerationRequest.partner_id == partner_b.id)
-        )
-        == 1
-    )
-    assert "gerando" in client.get(f"/portal/partners/{partner_b.id}").text
+        assert response.status_code in (404, 405)
 
 
 def test_csrf_logout_and_login_rate_limit(portal) -> None:
@@ -704,32 +686,14 @@ def test_csrf_logout_and_login_rate_limit(portal) -> None:
     assert client.get(f"/portal/partners/{partner_a.id}").status_code == 401
 
 
-def test_admin_regenerate_and_logout(portal, db_session: Session) -> None:
-    client, partner_a, _, _ = portal
+def test_admin_partner_page_links_new_report_and_logout(portal) -> None:
+    client, partner_a, _, version = portal
     assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
     detail = client.get(f"/portal/partners/{partner_a.id}")
-    assert "Regenerar apenas este parceiro" in detail.text
+    assert f"/portal/imports/new?parceiro={partner_a.id}" in detail.text
+    assert f"versions/{version.id}/html" in detail.text
+    assert "Regenerar" not in detail.text
     csrf = _csrf(detail.text)
-    assert (
-        client.post(f"/portal/partners/{partner_a.id}/regenerate", data={"csrf": "bad"}).status_code
-        == 403
-    )
-    assert (
-        client.post(
-            f"/portal/partners/{partner_a.id}/regenerate",
-            data={"csrf": csrf},
-            follow_redirects=False,
-        ).status_code
-        == 303
-    )
-    assert (
-        db_session.scalar(
-            select(func.count())
-            .select_from(ReportGenerationRequest)
-            .where(ReportGenerationRequest.partner_id == partner_a.id)
-        )
-        == 1
-    )
     assert (
         client.post("/portal/logout", data={"csrf": csrf}, follow_redirects=False).status_code
         == 303
@@ -774,14 +738,18 @@ def test_admin_can_upload_private_pdf_and_duplicate_is_idempotent(
     )
     detail = client.get(received.headers["location"])
     assert detail.status_code == 200
-    assert "PDF recebido. O processamento automático começa" in detail.text
+    assert "Conferindo o PDF no Advbox" in detail.text
+    assert 'http-equiv="refresh"' in detail.text
 
     duplicate = client.post(
         "/portal/imports/new",
         data=payload,
         files={"source_pdf": ("another-name.pdf", content, "application/pdf")},
+        follow_redirects=False,
     )
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 303
+    assert duplicate.headers["location"] == f"/portal/imports/{batch.id}?repetido=1"
+    assert "Este PDF já tinha sido enviado" in client.get(duplicate.headers["location"]).text
     assert (
         db_session.scalar(
             select(func.count())
@@ -999,12 +967,7 @@ def test_security_audit_and_headers(portal, db_session: Session, caplog) -> None
     detail = client.get(f"/portal/partners/{partner_a.id}")
     html = client.get(f"/portal/partners/{partner_a.id}/versions/{version.id}/html")
     pdf = client.get(f"/portal/partners/{partner_a.id}/versions/{version.id}/pdf")
-    requested = client.post(
-        f"/portal/partners/{partner_a.id}/regenerate",
-        data={"csrf": _csrf(detail.text)},
-        follow_redirects=False,
-    )
-    assert all(item.status_code in (200, 303) for item in (listing, detail, html, pdf, requested))
+    assert all(item.status_code == 200 for item in (listing, detail, html, pdf))
     assert (
         client.post(
             "/portal/logout", data={"csrf": _csrf(detail.text)}, follow_redirects=False
@@ -1023,7 +986,6 @@ def test_security_audit_and_headers(portal, db_session: Session, caplog) -> None
         "partner_view",
         "report_view",
         "report_download",
-        "generation_requested",
         "logout",
     } <= actions
     for event in db_session.scalars(select(AuditEvent)).all():
@@ -1265,7 +1227,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         follow_redirects=False,
     )
     batch_html = client.get(received.headers["location"]).text
-    assert "Aguardando processamento" in batch_html
+    assert "Conferindo o PDF no Advbox" in batch_html
     assert "Na fila" in batch_html
     client.app.state.settings = _pilot_settings()
     admin_page = client.get("/portal/admin/partners").text
@@ -1374,6 +1336,7 @@ def test_pdf_review_visual_layout(portal, db_session: Session) -> None:
         parsed_item_count=1,
         parse_quality_count=0,
         state="needs_review",
+        processing_status="succeeded",
     )
     db_session.add(batch)
     db_session.flush()
@@ -1415,7 +1378,10 @@ def test_pdf_review_visual_layout(portal, db_session: Session) -> None:
         "imports": client.get("/portal/imports").text,
         "review": client.get(f"/portal/imports/{batch.id}").text,
     }
-    assert "SYNTHETIC-PRIVATE-VALUE" not in " ".join(pages.values())
+    # ADR-007: the pending item is identified so the operator knows what to fix in Advbox.
+    assert "Pasta SYNTHETIC-PRIVATE-VALUE" in pages["review"]
+    assert "Não encontrado no Advbox" in pages["review"]
+    assert "Aprovar e gerar relatório" not in pages["review"]
     css = client.get("/portal/assets.css").text
 
     async def check() -> None:
@@ -1444,3 +1410,152 @@ def test_pdf_review_visual_layout(portal, db_session: Session) -> None:
                 await browser.close()
 
     asyncio.run(check())
+
+
+def test_upload_flow_approves_and_generates_in_one_step(portal, db_session: Session, tmp_path):
+    import httpx
+
+    from partner_reports.integrations.advbox.client import AdvboxClient
+    from partner_reports.jobs.automation import process_one
+    from partner_reports.pdf_imports.automation import process_one_pdf_import
+    from tests.test_pdf_import_automation import (
+        _api_settings,
+        _create_batch,
+        _sessions,
+        _success_handler,
+    )
+
+    client, _, _, _ = portal
+    settings = _pilot_settings()
+    client.app.state.settings = settings
+    storage = client.app.state.pdf_import_storage
+    batch = _create_batch(db_session, storage, external_id="PILOT-FLOW")
+
+    async def conferir() -> str:
+        api = AdvboxClient(_api_settings(), transport=httpx.MockTransport(_success_handler([])))
+        try:
+            return await process_one_pdf_import(_sessions(db_session), settings, storage, api)
+        finally:
+            await api.aclose()
+
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    assert "Conferindo o PDF no Advbox" in client.get(f"/portal/imports/{batch.id}").text
+    assert asyncio.run(conferir()) == "succeeded"
+    db_session.expire_all()
+    page = client.get(f"/portal/imports/{batch.id}")
+    assert "Tudo certo para gerar o relatório" in page.text
+    assert "Aprovar e gerar relatório" in page.text
+    revision = db_session.get(PdfImportBatch, batch.id).review_revision
+    url = f"/portal/imports/{batch.id}/approve"
+    assert client.post(url, data={"csrf": "bad", "revision": str(revision)}).status_code == 403
+    approved = client.post(
+        url,
+        data={"csrf": _csrf(page.text), "revision": str(revision), "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303
+    assert approved.headers["location"] == f"/portal/imports/{batch.id}"
+    db_session.expire_all()
+    assert db_session.get(PdfImportBatch, batch.id).state == "approved"
+    queued = db_session.scalar(
+        select(ReportGenerationRequest).where(ReportGenerationRequest.pdf_batch_id == batch.id)
+    )
+    assert queued is not None and queued.status == "pending"
+    assert "Gerando o relatório" in client.get(f"/portal/imports/{batch.id}").text
+    stale = client.post(
+        url,
+        data={"csrf": _csrf(page.text), "revision": str(revision), "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert stale.headers["location"].endswith("?aviso=conflito")
+
+    async def fake_pdf(_):
+        return b"%PDF-1.7\n% synthetic report"
+
+    generated = asyncio.run(
+        process_one(
+            _sessions(db_session),
+            AppEnvironment.TEST,
+            tmp_path / "reports",
+            pdf_renderer=fake_pdf,
+            settings=settings,
+        )
+    )
+    assert generated == "succeeded"
+    db_session.expire_all()
+    version = db_session.scalar(select(ReportVersion).where(ReportVersion.pdf_batch_id == batch.id))
+    done = client.get(f"/portal/imports/{batch.id}").text
+    assert "Relatório pronto" in done
+    assert f"versions/{version.id}/pdf" in done
+    partner_page = client.get(f"/portal/partners/{version.partner_id}").text
+    assert f"versions/{version.id}/html" in partner_page
+    actions = set(db_session.scalars(select(AuditEvent.action)).all())
+    assert {"pdf_review_approved", "generation_requested"} <= actions
+
+
+def test_failed_processing_can_be_retried_from_the_page(portal, db_session: Session) -> None:
+    client, partner, _, _ = portal
+    source = PdfSourceDocument(
+        source_sha256=uuid.uuid4().hex * 2,
+        storage_object_key=f"pdf-source/{uuid.uuid4().hex}.pdf",
+        byte_size=500,
+        page_count=1,
+        media_type="application/pdf",
+    )
+    db_session.add(source)
+    db_session.flush()
+    batch = PdfImportBatch(
+        source_document_id=source.id,
+        partner_id=partner.id,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        state="quarantined",
+        processing_status="failed",
+        processing_attempt_count=3,
+        processing_error_code="API_READ_FAILED",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get(f"/portal/imports/{batch.id}").text
+    assert "Não foi possível conferir este PDF" in page
+    assert "Tentar novamente" in page
+    retried = client.post(
+        f"/portal/imports/{batch.id}/review/reprocess",
+        data={"csrf": _csrf(page), "revision": "0", "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert retried.status_code == 303
+    db_session.refresh(batch)
+    assert batch.processing_status == "pending"
+    assert batch.processing_attempt_count == 0
+    assert "Conferindo o PDF no Advbox" in client.get(f"/portal/imports/{batch.id}").text
+
+
+def test_upload_uses_reference_month_and_refuses_future_month(portal, db_session) -> None:
+    from partner_reports.web.routes.portal import _today
+
+    client, partner, _, _ = portal
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    today = _today()
+    page = client.get(f"/portal/imports/new?parceiro={partner.id}").text
+    assert f'value="{today:%Y-%m}"' in page
+    assert f'<option value="{partner.id}" selected>' in page
+    future = date(today.year + 1, today.month, 1)
+    for month, expected in ((f"{today:%Y-%m}", 303), (f"{future:%Y-%m}", 400)):
+        response = client.post(
+            "/portal/imports/new",
+            data={"csrf": _csrf(page), "partner_id": str(partner.id), "period_month": month},
+            files={
+                "source_pdf": (
+                    "synthetic.pdf",
+                    _synthetic_source_pdf() + uuid.uuid4().bytes,
+                    "application/pdf",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == expected
+    batch = db_session.scalar(select(PdfImportBatch).where(PdfImportBatch.partner_id == partner.id))
+    assert batch.period_start == today.replace(day=1)
+    assert batch.period_end == today

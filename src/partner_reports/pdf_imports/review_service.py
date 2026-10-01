@@ -154,12 +154,18 @@ def request_reprocessing(
     settings: Settings | None = None,
 ) -> PdfImportReview:
     batch = _locked_batch(db, batch_id, revision, environment, settings)
-    if batch.state != "needs_review":
+    if batch.state in {"quarantined", "parsed"} and batch.processing_status == "failed":
+        # Automatic attempts are exhausted; the same PDF cannot be uploaded again.
+        review = _record(db, batch, actor_id, "reprocess_requested", "PROCESSING_RETRY")
+    elif batch.state == "needs_review":
+        run = _latest_run(db, batch)
+        if reprocessing_pending(db, batch, run):
+            raise ReviewConflict("Reprocessamento já solicitado para esta reconciliação")
+        review = _record(
+            db, batch, actor_id, "reprocess_requested", "SOURCE_REPROCESS", run_id=run.id
+        )
+    else:
         raise ReviewConflict("Reprocessamento indisponível neste estado")
-    run = _latest_run(db, batch)
-    if reprocessing_pending(db, batch, run):
-        raise ReviewConflict("Reprocessamento já solicitado para esta reconciliação")
-    review = _record(db, batch, actor_id, "reprocess_requested", "SOURCE_REPROCESS", run_id=run.id)
     batch.processing_status = "pending"
     batch.processing_attempt_count = 0
     batch.processing_available_at = None
