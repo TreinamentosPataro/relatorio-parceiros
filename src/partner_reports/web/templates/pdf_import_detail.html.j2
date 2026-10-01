@@ -45,6 +45,7 @@
   {% elif stage == 'ready' %}
     <h2>Tudo certo para gerar o relatório</h2>
     <p>Os {{ matched }} processo{{ 's' if matched != 1 else '' }} do PDF foram encontrados no Advbox.</p>
+    {% include "_percentage.html.j2" %}
     <div class="action-group">
       <form method="post" action="/portal/imports/{{ batch.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Aprovar e gerar relatório</button></form>
       <form method="post" action="/portal/imports/{{ batch.id }}/review/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ batch.review_revision }}"><input type="hidden" name="confirm" value="yes"><button class="button button-secondary" type="submit">Descartar envio</button></form>
@@ -62,8 +63,12 @@
     <div class="action-group"><form method="post" action="/portal/imports/{{ batch.id }}/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Gerar novamente</button></form></div>
   {% elif stage == 'done' %}
     <h2>Relatório pronto</h2>
-    <p>Gerado em {{ version.generated_at|datahora }}. Confira o conteúdo antes de enviar ao parceiro.</p>
+    <p>Gerado em {{ version.generated_at|datahora }}{% if version.partnership_percentage is not none %} com {{ version.partnership_percentage|percentual }}% de parceria{% endif %}. Confira o conteúdo antes de enviar ao parceiro.</p>
     <div class="action-group"><a class="button button-primary" href="/portal/partners/{{ partner.id }}/versions/{{ version.id }}/html">Ver relatório</a><a class="button button-secondary" href="/portal/partners/{{ partner.id }}/versions/{{ version.id }}/pdf">Baixar PDF</a></div>
+    {% if version.partnership_percentage is not none and version.partnership_percentage != partner.partnership_percentage %}
+    <div class="notice" role="status"><strong>O percentual do parceiro mudou para {{ partner.partnership_percentage|percentual }}%.</strong> Gere de novo para atualizar a prestação de contas; a versão atual continua no histórico.</div>
+    <div class="action-group"><form method="post" action="/portal/imports/{{ batch.id }}/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="yes"><button class="button button-primary" type="submit">Gerar de novo com {{ partner.partnership_percentage|percentual }}%</button></form></div>
+    {% endif %}
   {% elif stage == 'rejected' %}
     <h2>Envio descartado</h2>
     <p>Este envio não gera relatório. Para continuar, faça um novo envio com o PDF exportado do Advbox.</p>

@@ -272,3 +272,10 @@ class AdvboxClient:
         return await self._transport.get(
             self._ENDPOINTS[resource], params={"limit": limit, "offset": offset}
         )
+
+    async def lawsuit_movements(self, lawsuit_id: int) -> SafeHttpResult:
+        """Read the movements of one lawsuit (`/movements/{id}`, confirmed by the audit)."""
+
+        if isinstance(lawsuit_id, bool) or not isinstance(lawsuit_id, int) or lawsuit_id <= 0:
+            raise ValueError("ID técnico de processo inválido")
+        return await self._transport.get(f"/movements/{lawsuit_id}")

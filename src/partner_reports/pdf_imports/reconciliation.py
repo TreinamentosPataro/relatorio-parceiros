@@ -10,6 +10,7 @@ from enum import StrEnum
 
 from pydantic import ValidationError
 
+from partner_reports.contracts.ingestion import AdvboxLawsuitInput
 from partner_reports.integrations.advbox.client import AdvboxClient, AdvboxUnexpectedResponse
 from partner_reports.integrations.advbox.normalize import normalize_record, report_hash
 from partner_reports.jobs.sync import PAGE_SIZE, _page
@@ -39,6 +40,8 @@ class ApiCandidate:
     folder_exact: str | None = field(repr=False)
     record_digest: str = field(repr=False)
     customer_external_ids: tuple[int, ...] = field(default=(), repr=False)
+    # In memory only; persisted solely for reconciled lawsuits (ADR-007).
+    detail: AdvboxLawsuitInput | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,7 @@ def _project_lawsuit(raw: dict) -> ApiCandidate:
         folder_exact=normalize_folder(normalized.folder),
         record_digest=report_hash(normalized),
         customer_external_ids=normalized.customer_external_ids,
+        detail=normalized,
     )
 
 

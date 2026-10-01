@@ -31,6 +31,14 @@ class AdvboxLawsuitInput(BaseModel):
     process_date: date | None = None
     source_created_at: AwareDatetime | None = None
     customer_external_ids: tuple[int, ...] = ()
+    # ADR-007 report fields; the customer document number is never read.
+    lawsuit_type_label: str | None = Field(default=None, max_length=250, repr=False)
+    stage_label: str | None = Field(default=None, max_length=250, repr=False)
+    step_label: str | None = Field(default=None, max_length=120, repr=False)
+    responsible_name: str | None = Field(default=None, max_length=250, repr=False)
+    contingency: str | None = Field(default=None, max_length=80, repr=False)
+    fees_expected: StrictDecimal | None = Field(default=None, repr=False)
+    customer_names: tuple[tuple[int, str | None], ...] = Field(default=(), repr=False)
 
 
 class AdvboxMovementInput(BaseModel):
@@ -51,6 +59,7 @@ class AdvboxTransactionInput(BaseModel):
     amount_status: AvailabilityStatus
     entry_type: str | None = Field(default=None, max_length=40)
     category: str | None = Field(default=None, max_length=250, repr=False)
+    description: str | None = Field(default=None, max_length=250, repr=False)
     cost_center: str | None = Field(default=None, max_length=250, repr=False)
     competence: str | None = Field(default=None, max_length=40)
     date_due: date | None = None

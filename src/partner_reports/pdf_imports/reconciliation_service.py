@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from partner_reports.config import AppEnvironment, Settings
 from partner_reports.integrations.advbox.client import AdvboxClient
+from partner_reports.integrations.advbox.normalize import report_hash
 from partner_reports.partner_scope import partner_in_scope
+from partner_reports.pdf_imports.enrichment import PortfolioEnrichment
 from partner_reports.pdf_imports.lifecycle import PdfBatchState, require_transition
 from partner_reports.pdf_imports.parser import ManifestItem
 from partner_reports.pdf_imports.reconciliation import (
@@ -26,8 +28,10 @@ from partner_reports.pdf_imports.reconciliation import (
 )
 from partner_reports.persistence.models import (
     Customer,
+    FinancialTransaction,
     Lawsuit,
     LawsuitCustomer,
+    Movement,
     Partner,
     PdfImportBatch,
     PdfImportEvent,
@@ -51,9 +55,15 @@ def _minimal_candidate_digest(candidate: ApiCandidate) -> str:
 
 
 def _persist_minimal_matched_snapshot(
-    db: Session, snapshot: ApiSnapshot, results: tuple[MatchResult, ...]
+    db: Session,
+    snapshot: ApiSnapshot,
+    results: tuple[MatchResult, ...],
+    enrichment: PortfolioEnrichment | None = None,
 ) -> None:
-    """Persist only matched lawsuits and referenced customer IDs, never names or free text."""
+    """Persist only matched lawsuits with the ADR-007 report fields; others are discarded.
+
+    Customer document numbers, contacts, notes and non-portfolio lawsuits never persist.
+    """
 
     matched_ids = {
         result.matched_advbox_id for result in results if result.status is MatchStatus.MATCHED
@@ -84,6 +94,15 @@ def _persist_minimal_matched_snapshot(
         )
         db.add(row)
         customers[external_id] = row
+    names = {
+        customer_id: name
+        for candidate in candidates.values()
+        if candidate.detail is not None
+        for customer_id, name in candidate.detail.customer_names
+    }
+    for external_id, name in names.items():
+        if external_id in customers and customers[external_id].name != name:
+            customers[external_id].name = name
     db.flush()
 
     lawsuits = {
@@ -98,6 +117,18 @@ def _persist_minimal_matched_snapshot(
             lawsuits[external_id] = lawsuit
         lawsuit.process_number = candidate.process_number_normalized
         lawsuit.folder = candidate.folder_exact
+        detail = candidate.detail
+        if detail is not None:
+            for column, value in (
+                ("lawsuit_type_label", detail.lawsuit_type_label),
+                ("stage_label", detail.stage_label),
+                ("step_label", detail.step_label),
+                ("responsible_name", detail.responsible_name),
+                ("contingency", detail.contingency),
+                ("fees_expected", detail.fees_expected),
+            ):
+                if getattr(lawsuit, column) != value:
+                    setattr(lawsuit, column, value)
         lawsuit.report_hash = _minimal_candidate_digest(candidate)
         lawsuit.synced_at = now
         lawsuit.status = "active"
@@ -118,6 +149,76 @@ def _persist_minimal_matched_snapshot(
                 db.delete(link)
         for customer_id in desired - existing.keys():
             db.add(LawsuitCustomer(lawsuit_id=lawsuit.id, customer_id=customer_id))
+    db.flush()
+    if enrichment is not None:
+        _persist_enrichment(db, {key: row.id for key, row in lawsuits.items()}, enrichment, now)
+
+
+def _persist_enrichment(
+    db: Session,
+    lawsuit_ids: dict[int, uuid.UUID],
+    enrichment: PortfolioEnrichment,
+    now: datetime,
+) -> None:
+    """Keep only the latest movement and the allowlisted entries of each portfolio lawsuit."""
+
+    if set(enrichment.last_movements) != set(lawsuit_ids):
+        raise ValueError("andamentos não correspondem à carteira")
+    for external_id, internal_id in lawsuit_ids.items():
+        latest = enrichment.last_movements[external_id]
+        for row in db.scalars(select(Movement).where(Movement.lawsuit_id == internal_id)):
+            if latest is None or row.source_fingerprint != latest.source_fingerprint:
+                db.delete(row)
+            else:
+                latest = None
+        if latest is not None:
+            db.add(
+                Movement(
+                    lawsuit_id=internal_id,
+                    source_fingerprint=latest.source_fingerprint,
+                    occurred_at=latest.occurred_at,
+                    title=latest.title,
+                    synced_at=now,
+                )
+            )
+    entries = {}
+    for entry in enrichment.transactions:
+        if entry.lawsuit_external_id not in lawsuit_ids:
+            raise ValueError("lançamento fora da carteira")
+        entries[entry.external_id] = entry
+    existing = {
+        row.advbox_id: row
+        for row in db.scalars(
+            select(FinancialTransaction).where(
+                (FinancialTransaction.lawsuit_id.in_(lawsuit_ids.values()))
+                | (FinancialTransaction.advbox_id.in_(list(entries)))
+            )
+        )
+    }
+    for advbox_id, row in existing.items():
+        if advbox_id not in entries:
+            db.delete(row)
+    for advbox_id, entry in entries.items():
+        row = existing.get(advbox_id) or FinancialTransaction(advbox_id=advbox_id)
+        values = {
+            "lawsuit_id": lawsuit_ids[entry.lawsuit_external_id],
+            "amount": entry.amount,
+            "amount_status": entry.amount_status.value,
+            "entry_type": entry.entry_type,
+            "category": entry.category,
+            "description": entry.description,
+            "competence": entry.competence,
+            "date_due": entry.date_due,
+            "date_payment": entry.date_payment,
+            "is_internal": entry.is_internal,
+            "report_hash": report_hash(entry),
+        }
+        for column, value in values.items():
+            if getattr(row, column) != value:
+                setattr(row, column, value)
+        if advbox_id not in existing:
+            row.synced_at = now
+            db.add(row)
     db.flush()
 
 
@@ -157,12 +258,30 @@ async def dry_run_batch(
     return summarize(reconcile_items(items, snapshot))
 
 
+def matched_lawsuit_ids(db: Session, batch_id: uuid.UUID, snapshot: ApiSnapshot) -> set[int]:
+    """Advbox IDs of the portfolio lawsuits, read before the report data is collected."""
+
+    batch = db.get(PdfImportBatch, batch_id)
+    if batch is None or batch.state not in {PdfBatchState.PARSED, PdfBatchState.NEEDS_REVIEW}:
+        raise ValueError("lote indisponível para reconciliação")
+    return {
+        result.matched_advbox_id
+        for result in reconcile_items(_manifest(db, batch), snapshot)
+        if result.status is MatchStatus.MATCHED
+    }
+
+
+# Two lawsuit reads plus the paged financial read take several minutes at 20 GET/min.
+SNAPSHOT_MAX_AGE = timedelta(minutes=30)
+
+
 def _persist_reconciliation(
     db: Session,
     batch_id: uuid.UUID,
     snapshot: ApiSnapshot,
     *,
     persist_minimal_snapshot: bool = False,
+    enrichment: PortfolioEnrichment | None = None,
 ) -> PdfReconciliationRun:
     batch = db.get(PdfImportBatch, batch_id, with_for_update=True)
     if batch is None or batch.state not in {PdfBatchState.PARSED, PdfBatchState.NEEDS_REVIEW}:
@@ -171,7 +290,7 @@ def _persist_reconciliation(
         raise ValueError("parser não versionado")
     require_snapshot_integrity(snapshot)
     age = datetime.now(UTC) - snapshot.verified_at
-    if age < timedelta(seconds=0) or age > timedelta(minutes=5):
+    if age < timedelta(seconds=0) or age > SNAPSHOT_MAX_AGE:
         raise ValueError("fotografia técnica expirada")
 
     previous = db.scalar(
@@ -184,14 +303,17 @@ def _persist_reconciliation(
     if previous is not None:
         if persist_minimal_snapshot:
             _persist_minimal_matched_snapshot(
-                db, snapshot, reconcile_items(_manifest(db, batch), snapshot)
+                db, snapshot, reconcile_items(_manifest(db, batch), snapshot), enrichment
             )
+            # Movements or entries may have changed under the same lawsuit snapshot;
+            # the report reads normalized rows only up to the run's creation instant.
+            previous.created_at = datetime.now(UTC)
         return previous
 
     items = _manifest(db, batch)
     results = reconcile_items(items, snapshot)
     if persist_minimal_snapshot:
-        _persist_minimal_matched_snapshot(db, snapshot, results)
+        _persist_minimal_matched_snapshot(db, snapshot, results, enrichment)
     summary = summarize(results)
     run = PdfReconciliationRun(
         batch_id=batch.id,
@@ -290,6 +412,7 @@ def persist_scoped_reconciliation(
     snapshot: ApiSnapshot,
     *,
     settings: Settings,
+    enrichment: PortfolioEnrichment | None = None,
 ) -> PdfReconciliationRun:
     """Persist proposals only when the batch partner is in the configured data scope."""
 
@@ -297,7 +420,9 @@ def persist_scoped_reconciliation(
     partner = db.get(Partner, batch.partner_id) if batch is not None else None
     if not partner_in_scope(settings, partner):
         raise ValueError("parceiro fora do escopo de dados")
-    return _persist_reconciliation(db, batch_id, snapshot, persist_minimal_snapshot=True)
+    return _persist_reconciliation(
+        db, batch_id, snapshot, persist_minimal_snapshot=True, enrichment=enrichment
+    )
 
 
 def persist_authorized_private_reconciliation(

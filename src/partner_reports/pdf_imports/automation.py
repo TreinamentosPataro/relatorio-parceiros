@@ -11,9 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from partner_reports.config import Settings
 from partner_reports.integrations.advbox.client import AdvboxAuditError, AdvboxClient
 from partner_reports.partner_scope import partner_scope_clause
+from partner_reports.pdf_imports.enrichment import collect_portfolio_enrichment
 from partner_reports.pdf_imports.processing import parse_quarantined_batch
 from partner_reports.pdf_imports.reconciliation import collect_verified_snapshot
-from partner_reports.pdf_imports.reconciliation_service import persist_scoped_reconciliation
+from partner_reports.pdf_imports.reconciliation_service import (
+    matched_lawsuit_ids,
+    persist_scoped_reconciliation,
+)
 from partner_reports.pdf_imports.storage import PrivatePdfStorage
 from partner_reports.persistence.models import Partner, PdfImportBatch
 
@@ -189,11 +193,16 @@ async def process_one_pdf_import(
             return result
 
         snapshot = await collect_verified_snapshot(client)
+        with sessions() as db:
+            portfolio = matched_lawsuit_ids(db, batch_id, snapshot)
+        enrichment = await collect_portfolio_enrichment(client, portfolio)
         with sessions() as db, db.begin():
             batch = db.get(PdfImportBatch, batch_id, with_for_update=True)
             if not _owns_lease(batch, token):
                 return "lost_lease"
-            persist_scoped_reconciliation(db, batch_id, snapshot, settings=settings)
+            persist_scoped_reconciliation(
+                db, batch_id, snapshot, settings=settings, enrichment=enrichment
+            )
             now = datetime.now(UTC)
             batch.processing_status = "succeeded"
             batch.processing_finished_at = now

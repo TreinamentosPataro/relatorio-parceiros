@@ -3,6 +3,7 @@
 import re
 from datetime import date, datetime
 from decimal import Decimal
+from html import escape
 from importlib.resources import files
 from typing import Any
 
@@ -290,11 +291,23 @@ async def generate_pdf(
 ) -> bytes:
     """Generate A4 bytes in Chromium; caller owns durable storage and access control."""
 
-    from playwright.async_api import async_playwright
-
-    html = render_html(internal)
     report = to_partner_report(internal)
     version = report.metadata.value.report_version
+    return await html_to_pdf(
+        render_html(internal),
+        footer_label=f"Prévia sintética · versão {version}",
+        executable_path=executable_path,
+    )
+
+
+async def html_to_pdf(
+    html: str, *, footer_label: str, light: bool = False, executable_path: str | None = None
+) -> bytes:
+    """Print self-contained HTML to A4 with all network requests blocked."""
+
+    from playwright.async_api import async_playwright
+
+    colors = "color:#5C5C5C;background:#FFFFFF;" if light else "color:#EDEDED;background:#0A0A0A;"
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless=True,
@@ -313,10 +326,10 @@ async def generate_pdf(
                 header_template="<span></span>",
                 footer_template=(
                     '<div style="box-sizing:border-box;width:100%;height:15mm;'
-                    "font:9px Arial,sans-serif;color:#EDEDED;background:#0A0A0A;"
+                    f"font:9px Arial,sans-serif;{colors}"
                     "-webkit-print-color-adjust:exact;print-color-adjust:exact;"
                     'padding:3mm 16mm 0;display:flex;justify-content:space-between">'
-                    f"<span>Prévia sintética · versão {version}</span>"
+                    f"<span>{escape(footer_label)}</span>"
                     '<span><span class="pageNumber"></span> / '
                     '<span class="totalPages"></span></span></div>'
                 ),

@@ -7,6 +7,7 @@ import re
 import sys
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -1491,6 +1492,54 @@ def test_upload_flow_approves_and_generates_in_one_step(portal, db_session: Sess
     assert f"versions/{version.id}/html" in partner_page
     actions = set(db_session.scalars(select(AuditEvent.action)).all())
     assert {"pdf_review_approved", "generation_requested"} <= actions
+
+    # The partnership percentage is edited where the report is reviewed.
+    assert version.partnership_percentage == Decimal("10.00")
+    url = f"/portal/admin/partners/{version.partner_id}/percentage"
+    back = f"/portal/imports/{batch.id}"
+    for invalid in ("abc", "150", "-1"):
+        refused = client.post(url, data={"csrf": _csrf(done), "percentage": invalid, "back": back})
+        assert refused.status_code == 400
+    changed = client.post(
+        url,
+        data={"csrf": _csrf(done), "percentage": "12,5", "back": back},
+        follow_redirects=False,
+    )
+    assert changed.headers["location"] == back
+    db_session.expire_all()
+    partner = db_session.get(Partner, version.partner_id)
+    assert partner.partnership_percentage == Decimal("12.50")
+    assert _partner_audit(db_session, "partner_percentage_changed", partner.id) == 1
+    stale = client.get(back).text
+    assert "O percentual do parceiro mudou para 12,5%" in stale
+    regenerate = client.post(
+        f"/portal/imports/{batch.id}/generate",
+        data={"csrf": _csrf(stale), "confirm": "yes"},
+        follow_redirects=False,
+    )
+    assert regenerate.status_code == 303
+    assert "Gerando o relatório" in client.get(back).text
+    assert (
+        asyncio.run(
+            process_one(
+                _sessions(db_session),
+                AppEnvironment.TEST,
+                tmp_path / "reports",
+                pdf_renderer=fake_pdf,
+                settings=settings,
+            )
+        )
+        == "succeeded"
+    )
+    db_session.expire_all()
+    newest = db_session.scalar(
+        select(ReportVersion)
+        .where(ReportVersion.pdf_batch_id == batch.id)
+        .order_by(ReportVersion.version.desc())
+        .limit(1)
+    )
+    assert newest.version == 2 and newest.partnership_percentage == Decimal("12.50")
+    assert "mudou para" not in client.get(back).text
 
 
 def test_failed_processing_can_be_retried_from_the_page(portal, db_session: Session) -> None:

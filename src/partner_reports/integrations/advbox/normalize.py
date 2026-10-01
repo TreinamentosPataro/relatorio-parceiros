@@ -38,6 +38,19 @@ def _text(value: Any) -> str | None:
     return value
 
 
+def _short(value: Any, limit: int = 250) -> str | None:
+    text = _text(value)
+    return " ".join(text.split())[:limit] if text else None
+
+
+def _money(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise AdvboxUnexpectedResponse("valor monetário inválido")
+    return Decimal(str(value))
+
+
 def _date(value: Any) -> date | None:
     if value is None or value == "":
         return None
@@ -103,6 +116,11 @@ def normalize_record(resource: str, raw: Mapping[str, Any]) -> Any:
                 }
             )
         )
+        names: dict[int, str | None] = {}
+        for customer in related:
+            identifier = _positive_id(customer.get("customer_id"))
+            if identifier is not None:
+                names[identifier] = _short(customer.get("name"))
         return AdvboxLawsuitInput(
             external_id=external_id,
             process_number=_text(raw.get("process_number")),
@@ -115,6 +133,13 @@ def normalize_record(resource: str, raw: Mapping[str, Any]) -> Any:
             process_date=_date(raw.get("process_date")),
             source_created_at=_datetime(raw.get("created_at")),
             customer_external_ids=customer_ids,
+            lawsuit_type_label=_short(raw.get("type")),
+            stage_label=_short(raw.get("stage")),
+            step_label=_short(raw.get("step"), 120),
+            responsible_name=_short(raw.get("responsible")),
+            contingency=_short(raw.get("contingency"), 80),
+            fees_expected=_money(raw.get("fees_expec")),
+            customer_names=tuple(sorted(names.items())),
         )
     if resource == "transactions":
         amount = raw.get("amount")
@@ -136,6 +161,7 @@ def normalize_record(resource: str, raw: Mapping[str, Any]) -> Any:
             ),
             entry_type=_text(raw.get("entry_type")),
             category=_text(raw.get("category")),
+            description=_short(raw.get("description")),
             cost_center=_text(raw.get("cost_center")),
             competence=_text(raw.get("competence")),
             date_due=_date(raw.get("date_due")),

@@ -39,6 +39,7 @@ _ACTIONS = frozenset(
         "partner_created",
         "partner_pilot_enabled",
         "partner_pilot_disabled",
+        "partner_percentage_changed",
         "password_changed",
         "password_change_failed",
         "password_reset",

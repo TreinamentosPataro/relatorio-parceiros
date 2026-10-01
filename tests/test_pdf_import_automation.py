@@ -4,6 +4,7 @@ import asyncio
 import io
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -28,8 +29,10 @@ from partner_reports.pdf_imports.validation import validate_pdf
 from partner_reports.persistence.models import (
     AppUser,
     Customer,
+    FinancialTransaction,
     Lawsuit,
     LawsuitCustomer,
+    Movement,
     Partner,
     PdfImportBatch,
     PdfManifestItem,
@@ -128,31 +131,110 @@ def _sessions(db: Session) -> sessionmaker[Session]:
     )
 
 
+PORTFOLIO_ID = 9_000_401
+OTHER_ID = 9_000_499
+
+
 def _success_handler(calls: list[str]):
     rows = [
         {
-            "id": 9_000_401,
+            "id": PORTFOLIO_ID,
             "process_number": "1234567-89.2026.1.23.4567",
             "protocol_number": "RESTRICTED-NOT-PERSISTED",
             "folder": "PASTA-01",
             "group_id": 101,
             "stages_id": 202,
             "responsible_id": 303,
-            "customers": [{"customer_id": 8_000_101, "name": "RESTRICTED-NOT-PERSISTED"}],
+            "type": "BENEFICIO SINTETICO",
+            "step": "RH/FINANCEIRO",
+            "stage": "AGUARDANDO PAGAMENTO DOS HONORÁRIOS",
+            "responsible": "Responsável Sintético",
+            "contingency": "POSSÍVEL/TALVEZ",
+            "fees_expec": 1500,
+            "notes": "RESTRICTED-NOT-PERSISTED",
+            "customers": [
+                {
+                    "customer_id": 8_000_101,
+                    "name": "Cliente Sintético Um",
+                    "identification": "RESTRICTED-NOT-PERSISTED",
+                }
+            ],
         },
         {
-            "id": 9_000_499,
+            "id": OTHER_ID,
             "process_number": "7654321-98.2026.1.23.4567",
             "folder": "OUTRA-PASTA",
-            "customers": [{"customer_id": 8_000_199}],
+            "customers": [{"customer_id": 8_000_199, "name": "OTHER-CLIENT-NOT-PERSISTED"}],
+        },
+    ]
+    movements = [
+        {"lawsuit_id": PORTFOLIO_ID, "date": "2026-08-01", "title": "Andamento antigo"},
+        {"lawsuit_id": PORTFOLIO_ID, "date": "2026-09-10", "title": "Andamento sintético recente"},
+    ]
+    entries = [
+        {
+            "id": 7_001,
+            "lawsuit_id": PORTFOLIO_ID,
+            "entry_type": "income",
+            "category": "HONORÁRIOS POR MENSALIDADE",
+            "description": "Parcela 1",
+            "amount": 1000,
+            "date_due": "2026-08-05",
+            "date_payment": "2026-08-05",
+            "is_internal": True,
+        },
+        {
+            "id": 7_002,
+            "lawsuit_id": PORTFOLIO_ID,
+            "entry_type": "expense",
+            "category": "TAXAS BANCÁRIAS",
+            "description": "Boleto",
+            "amount": 5,
+            "date_due": "2026-08-05",
+            "date_payment": "2026-08-05",
+            "is_internal": True,
+        },
+        {
+            "id": 7_003,
+            "lawsuit_id": PORTFOLIO_ID,
+            "entry_type": "income",
+            "category": "HONORÁRIOS POR MENSALIDADE",
+            "description": "Parcela 2",
+            "amount": 1000,
+            "date_due": "2026-12-05",
+            "date_payment": None,
+            "is_internal": True,
+        },
+        {
+            "id": 7_004,
+            "lawsuit_id": PORTFOLIO_ID,
+            "entry_type": "expense",
+            "category": "SALÁRIOS",
+            "description": "RESTRICTED-NOT-PERSISTED",
+            "amount": 900,
+            "date_payment": "2026-08-05",
+            "is_internal": True,
+        },
+        {
+            "id": 7_005,
+            "lawsuit_id": OTHER_ID,
+            "entry_type": "income",
+            "category": "HONORÁRIOS INICIAIS",
+            "description": "RESTRICTED-NOT-PERSISTED",
+            "amount": 700,
+            "date_payment": "2026-08-05",
+            "is_internal": True,
         },
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.method)
+        if request.url.path.endswith(f"/movements/{PORTFOLIO_ID}"):
+            return httpx.Response(200, json={"data": movements, "query": []})
+        data = entries if request.url.path.endswith("/transactions") else rows
         return httpx.Response(
             200,
-            json={"data": rows, "totalCount": 2, "limit": 100, "offset": 0},
+            json={"data": data, "totalCount": len(data), "limit": 100, "offset": 0},
         )
 
     return handler
@@ -185,8 +267,9 @@ def test_worker_processes_only_pilot_enabled_batch(db_session: Session, tmp_path
     assert db_session.get(PdfImportBatch, allowed.id).processing_status == "succeeded"
     assert db_session.get(PdfImportBatch, blocked.id).state == "quarantined"
     assert db_session.get(PdfImportBatch, blocked.id).processing_status == "pending"
-    assert calls == ["GET", "GET"]
-    lawsuit = db_session.scalar(select(Lawsuit).where(Lawsuit.advbox_id == 9_000_401))
+    # Two lawsuit reads, the portfolio lawsuit's movements and one transactions page.
+    assert calls == ["GET", "GET", "GET", "GET"]
+    lawsuit = db_session.scalar(select(Lawsuit).where(Lawsuit.advbox_id == PORTFOLIO_ID))
     assert lawsuit is not None
     assert lawsuit.process_number == "12345678920261234567"
     assert lawsuit.folder == "PASTA-01"
@@ -194,10 +277,32 @@ def test_worker_processes_only_pilot_enabled_batch(db_session: Session, tmp_path
     assert lawsuit.group_id is None
     assert lawsuit.stage_id is None
     assert lawsuit.responsible_id is None
-    assert db_session.scalar(select(Lawsuit.id).where(Lawsuit.advbox_id == 9_000_499)) is None
+    # ADR-007 report fields of the portfolio lawsuit only.
+    assert lawsuit.lawsuit_type_label == "BENEFICIO SINTETICO"
+    assert lawsuit.step_label == "RH/FINANCEIRO"
+    assert lawsuit.stage_label == "AGUARDANDO PAGAMENTO DOS HONORÁRIOS"
+    assert lawsuit.responsible_name == "Responsável Sintético"
+    assert lawsuit.contingency == "POSSÍVEL/TALVEZ"
+    assert lawsuit.fees_expected == Decimal("1500.00")
+    assert db_session.scalar(select(Lawsuit.id).where(Lawsuit.advbox_id == OTHER_ID)) is None
     customer = db_session.scalar(select(Customer).where(Customer.advbox_id == 8_000_101))
-    assert customer is not None and customer.name is None
+    assert customer is not None and customer.name == "Cliente Sintético Um"
+    assert customer.identification is None
     assert db_session.scalar(select(Customer.id).where(Customer.advbox_id == 8_000_199)) is None
+    movements = db_session.scalars(select(Movement).where(Movement.lawsuit_id == lawsuit.id)).all()
+    assert [row.title for row in movements] == ["Andamento sintético recente"]
+    stored = db_session.scalars(
+        select(FinancialTransaction.advbox_id).order_by(FinancialTransaction.advbox_id)
+    ).all()
+    assert stored == [7_001, 7_002, 7_003]
+    persisted_text = " ".join(
+        str(value)
+        for model in (Lawsuit, Customer, Movement, FinancialTransaction)
+        for row in db_session.scalars(select(model)).all()
+        for value in vars(row).values()
+    )
+    assert "RESTRICTED-NOT-PERSISTED" not in persisted_text
+    assert "OTHER-CLIENT-NOT-PERSISTED" not in persisted_text
     assert (
         db_session.scalar(
             select(func.count())
@@ -281,7 +386,7 @@ def test_worker_resumes_from_parsed_boundary_after_api_failure(
         )
         == 1
     )
-    assert calls == ["GET", "GET"]
+    assert calls == ["GET", "GET", "GET", "GET"]
 
 
 def test_private_pilot_review_links_and_minimized_report(db_session: Session, tmp_path) -> None:
@@ -352,9 +457,27 @@ def test_private_pilot_review_links_and_minimized_report(db_session: Session, tm
     html = store.read(version.storage_object_key, "html")
     pdf = store.read(version.storage_object_key, "pdf")
     assert pdf.startswith(b"%PDF")
-    assert b"RESTRICTED-NOT-PERSISTED" not in html
-    assert b"12345678920261234567" not in html
-    assert b"PASTA-01" not in html
+    assert version.partnership_percentage == Decimal("10.00")
+    page = html.decode()
+    assert "RESTRICTED-NOT-PERSISTED" not in page
+    assert "OTHER-CLIENT-NOT-PERSISTED" not in page
+    # ADR-007 content of the portfolio lawsuit.
+    for expected in (
+        "Cliente Sintético Um",
+        "Pasta PASTA-01",
+        "Processo 1234567-89.2026.1.23.4567",
+        "BENEFICIO SINTETICO",
+        "AGUARDANDO PAGAMENTO DOS HONORÁRIOS",
+        "Andamento sintético recente",
+        "Responsável Sintético",
+        "POSSÍVEL/TALVEZ",
+        "R$ 1.500,00",
+    ):
+        assert expected in page
+    assert "Andamento antigo" not in page
+    # Paid 1,000 − bank fee 5 − 7.5% tax 75 = net 920; 10% → 92 owed, nothing paid yet.
+    for expected in ("R$ 1.000,00", "R$ 75,00", "R$ 920,00", "R$ 92,00", "R$ 92,50", "R$ 828,00"):
+        assert expected in page
 
 
 def test_report_refuses_period_still_open_at_snapshot(db_session: Session, tmp_path) -> None:

@@ -41,6 +41,10 @@ class Partner(UuidPrimaryKeyMixin, TimestampMixin, Base):
             f"status IN ({ACTIVE_STATUS_VALUES})",
             name="status_values",
         ),
+        CheckConstraint(
+            "partnership_percentage >= 0 AND partnership_percentage <= 100",
+            name="partnership_percentage_range",
+        ),
     )
 
     external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
@@ -49,6 +53,10 @@ class Partner(UuidPrimaryKeyMixin, TimestampMixin, Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pilot_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Share of the net fees owed to the partner (ADR-007); most partners use 10%.
+    partnership_percentage: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("10.00"), server_default=text("10.00")
     )
 
 
@@ -93,6 +101,12 @@ class Lawsuit(UuidPrimaryKeyMixin, TimestampMixin, Base):
     lawsuit_type_id: Mapped[int | None] = mapped_column(BigInteger)
     stage_id: Mapped[int | None] = mapped_column(BigInteger)
     responsible_id: Mapped[int | None] = mapped_column(BigInteger)
+    lawsuit_type_label: Mapped[str | None] = mapped_column(String(250))
+    stage_label: Mapped[str | None] = mapped_column(String(250))
+    step_label: Mapped[str | None] = mapped_column(String(120))
+    responsible_name: Mapped[str | None] = mapped_column(String(250))
+    contingency: Mapped[str | None] = mapped_column(String(80))
+    fees_expected: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     process_date: Mapped[date | None] = mapped_column(Date)
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     report_hash: Mapped[str | None] = mapped_column(String(64))
@@ -325,6 +339,7 @@ class FinancialTransaction(UuidPrimaryKeyMixin, TimestampMixin, Base):
     amount_status: Mapped[str] = mapped_column(String(30), nullable=False)
     entry_type: Mapped[str | None] = mapped_column(String(40))
     category: Mapped[str | None] = mapped_column(String(250))
+    description: Mapped[str | None] = mapped_column(String(250))
     cost_center: Mapped[str | None] = mapped_column(String(250))
     competence: Mapped[str | None] = mapped_column(String(40))
     date_due: Mapped[date | None] = mapped_column(Date)
@@ -431,6 +446,7 @@ class ReportVersion(UuidPrimaryKeyMixin, Base):
     )
     customer_count: Mapped[int | None] = mapped_column(Integer)
     case_count: Mapped[int | None] = mapped_column(Integer)
+    partnership_percentage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

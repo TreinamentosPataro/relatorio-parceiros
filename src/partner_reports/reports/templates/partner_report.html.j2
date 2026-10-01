@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+  <title>Relatório do parceiro · {{ report.partner_name }}</title>
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+<main class="sheet">
+  <header class="masthead">
+    <div class="brand"><span class="brand-symbol">P</span><span>RELATÓRIO DO PARCEIRO</span></div>
+    <div class="hero">
+      <div>
+        <p class="eyebrow">Carteira de clientes</p>
+        <h1>{{ report.partner_name }}</h1>
+        <p class="muted">Período {{ report.period_start|data }} a {{ report.period_end|data }} · dados do Advbox em {{ report.as_of|datahora }}</p>
+      </div>
+      <dl class="facts">
+        <div><dt>Percentual da parceria</dt><dd>{{ report.percentage|percentual }}</dd></div>
+        <div><dt>Versão</dt><dd>v{{ report.version }} · {{ report.generated_at|data }}</dd></div>
+      </dl>
+    </div>
+  </header>
+
+  <section class="block" aria-labelledby="resumo">
+    <p class="eyebrow">01 · Resumo</p><h2 id="resumo">Visão geral da carteira</h2>
+    <div class="cards">
+      <div class="card"><span>Total de clientes</span><strong>{{ report.indicators.clients }}</strong></div>
+      <div class="card"><span>Processos</span><strong>{{ report.indicators.cases }}</strong></div>
+      <div class="card"><span>Benefícios concedidos</span><strong>{{ report.indicators.benefit }}</strong></div>
+      <div class="card"><span>Em financeiro</span><strong>{{ report.indicators.financial }}</strong></div>
+      <div class="card"><span>Em judicial</span><strong>{{ report.indicators.judicial }}</strong></div>
+    </div>
+    <p class="note">Um processo pode estar ao mesmo tempo em mais de um indicador; os indicadores não somam o total.{% if report.indicators.unclassified %} {{ report.indicators.unclassified }} processo(s) estão em fase ainda não classificada.{% endif %}</p>
+    <h3>Financeiro do parceiro</h3>
+    <table class="summary">
+      <tbody>
+        <tr><th scope="row">Processos com financeiro</th><td>{{ report.finance.cases_with_finance }}</td></tr>
+        <tr><th scope="row">Honorários recebidos pelo escritório</th><td>{{ report.finance.paid_income|dinheiro }}</td></tr>
+        <tr><th scope="row">Valor do parceiro sobre o recebido</th><td>{{ report.finance.partner_share|dinheiro }}</td></tr>
+        <tr><th scope="row">Já pago ao parceiro</th><td>{{ report.finance.partner_paid|dinheiro }}</td></tr>
+        <tr class="emphasis"><th scope="row">Saldo a pagar ao parceiro</th><td>{{ report.finance.balance|dinheiro }}</td></tr>
+        <tr><th scope="row">A receber pelo parceiro – parcelas futuras (estimado)</th><td>{{ report.finance.partner_future|dinheiro }}</td></tr>
+        <tr><th scope="row">Receita do escritório registrada</th><td>{{ report.finance.office_revenue|dinheiro }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="block" aria-labelledby="clientes">
+    <p class="eyebrow">02 · Clientes</p><h2 id="clientes">Processos da carteira</h2>
+    {% for view in report.cases %}{% set case = view.source %}
+    <article class="case">
+      <header class="case-head">
+        <div><h3>{{ case.customer_names|join(', ') if case.customer_names else 'Cliente não informado' }}</h3><p class="muted">{% if case.folder %}Pasta {{ case.folder }}{% endif %}{% if case.folder and case.process_number %} · {% endif %}{% if case.process_number %}Processo {{ case.process_number|cnj }}{% endif %}</p></div>
+        <div class="tags">{% if view.flags.benefit %}<span class="tag">Benefício concedido</span>{% endif %}{% if view.in_financial %}<span class="tag">Em financeiro</span>{% endif %}{% if view.flags.judicial %}<span class="tag">Em judicial</span>{% endif %}</div>
+      </header>
+      <dl class="case-grid">
+        <div><dt>Ação / benefício</dt><dd>{{ case.action or 'Não informado' }}</dd></div>
+        <div><dt>Fase atual</dt><dd>{% if case.stage %}{{ case.stage }}{% if case.step %} <span class="muted">({{ case.step }})</span>{% endif %}{% else %}Não informada{% endif %}</dd></div>
+        <div class="wide"><dt>Último andamento</dt><dd>{% if case.last_movement_at %}{{ case.last_movement_at|data }} – {{ case.last_movement_title or 'sem título' }}{% else %}Nenhum andamento registrado{% endif %}</dd></div>
+        <div><dt>Responsável</dt><dd>{{ case.responsible or 'Não informado' }}</dd></div>
+        <div><dt>Contingenciamento</dt><dd>{{ case.contingency or 'Não informado' }}</dd></div>
+        <div><dt>Valor informado</dt><dd>{{ case.fees_expected|dinheiro if case.fees_expected is not none else 'Não informado' }}</dd></div>
+      </dl>
+    </article>
+    {% else %}<p class="note">Nenhum processo na carteira deste período.</p>{% endfor %}
+  </section>
+
+  <section class="block accounts" aria-labelledby="contas">
+    <p class="eyebrow">03 · Prestação de contas</p><h2 id="contas">Prestação de contas do parceiro</h2>
+    <p class="note">Valor líquido = valor pago − taxas bancárias − imposto de 7,5%. Valor do parceiro = valor líquido × {{ report.percentage|percentual }}.</p>
+    {% for view in report.cases if view.account.has_activity %}{% set case = view.source %}{% set account = view.account %}
+    <article class="account">
+      <h3>{{ case.customer_names|join(', ') if case.customer_names else 'Cliente não informado' }}{% if case.folder %} <span class="muted">· Pasta {{ case.folder }}</span>{% endif %}</h3>
+      <table class="entries">
+        <thead><tr><th scope="col">Lançamento</th><th scope="col">Vencimento</th><th scope="col">Pagamento</th><th scope="col" class="num">Valor</th></tr></thead>
+        <tbody>{% for entry in account.entries %}<tr><td data-label="Lançamento"><span class="kind">{{ entry.kind|tipo }}</span> {{ entry.category or '' }}{% if entry.description %} – {{ entry.description }}{% endif %}</td><td data-label="Vencimento">{{ entry.date_due|data }}</td><td data-label="Pagamento">{{ entry.date_payment|data if entry.date_payment else 'Em aberto' }}</td><td data-label="Valor" class="num {{ 'out' if entry.kind != 'fee_income' else '' }}">{{ entry.amount|dinheiro if entry.amount is not none else '—' }}</td></tr>{% endfor %}</tbody>
+      </table>
+      <table class="summary compact"><tbody>
+        <tr><th scope="row">Valor pago pelo cliente</th><td>{{ account.paid_income|dinheiro }}</td></tr>
+        <tr><th scope="row">Taxas bancárias</th><td>− {{ account.bank_fees|dinheiro }}</td></tr>
+        <tr><th scope="row">Imposto (7,5%)</th><td>− {{ account.tax|dinheiro }}</td></tr>
+        <tr><th scope="row">Valor líquido</th><td>{{ account.net|dinheiro }}</td></tr>
+        <tr><th scope="row">Valor do parceiro ({{ report.percentage|percentual }})</th><td>{{ account.partner_share|dinheiro }}</td></tr>
+        <tr><th scope="row">Já pago ao parceiro</th><td>− {{ account.partner_paid|dinheiro }}</td></tr>
+        <tr class="emphasis"><th scope="row">Saldo a pagar</th><td>{{ account.balance|dinheiro }}</td></tr>
+        {% if account.future_income %}<tr><th scope="row">Parcelas futuras do cliente / parte estimada do parceiro</th><td>{{ account.future_income|dinheiro }} / {{ account.partner_future|dinheiro }}</td></tr>{% endif %}
+      </tbody></table>
+    </article>
+    {% else %}<p class="note">Nenhum lançamento de honorários, taxas ou repasses registrado no Advbox para os processos desta carteira.</p>{% endfor %}
+  </section>
+
+  <footer class="sheet-foot">Fonte: Advbox, consulta de {{ report.as_of|datahora }}. Carteira conforme o relatório do módulo Parceiros enviado ao portal. Regras {{ report.rule_version }}.</footer>
+</main>
+</body>
+</html>

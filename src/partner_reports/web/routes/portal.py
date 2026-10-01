@@ -6,6 +6,7 @@ import secrets
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from importlib.resources import files
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
@@ -147,6 +148,9 @@ _TEMPLATES.filters["conferencia"] = lambda value: {
     "process_number_exact": "Número do processo",
     "folder_exact_unique": "Pasta",
 }.get(value, value)
+_TEMPLATES.filters["percentual"] = lambda value: (
+    f"{value.normalize():f}".replace(".", ",") if value is not None else "—"
+)
 _TEMPLATES.filters["cnj"] = lambda value: (
     f"{value[:7]}-{value[7:9]}.{value[9:13]}.{value[13]}.{value[14:16]}.{value[16:]}"
     if value and len(value) == 20 and value.isdigit()
@@ -320,6 +324,12 @@ def _batch_stage(
 
     if batch.state in {"rejected", "superseded"}:
         return batch.state
+    if (
+        batch.state == "approved"
+        and generation is not None
+        and generation.status in {"pending", "running"}
+    ):
+        return "generating"
     if version is not None and version.status in {"validated", "published"}:
         return "done"
     if batch.state == "failed" or (
@@ -1136,10 +1146,14 @@ def pdf_import_detail(
         .order_by(ReportVersion.generated_at.desc())
         .limit(1)
     )
+    # An active request wins over finished ones; otherwise the most recent one counts.
     generation = db.scalar(
         select(ReportGenerationRequest)
         .where(ReportGenerationRequest.pdf_batch_id == batch.id)
-        .order_by(ReportGenerationRequest.created_at.desc())
+        .order_by(
+            ReportGenerationRequest.status.in_(("pending", "running")).desc(),
+            ReportGenerationRequest.created_at.desc(),
+        )
         .limit(1)
     )
     stage = _batch_stage(batch, approval_blocked, issues, version, generation)
@@ -1502,6 +1516,57 @@ async def set_partner_pilot(
     else:
         db.rollback()
     return RedirectResponse("/portal/admin/partners", status_code=303)
+
+
+def _percentage(raw: str) -> Decimal:
+    value = Decimal(raw.strip().replace("%", "").replace(",", "."))
+    if not value.is_finite() or not Decimal(0) <= value <= Decimal(100):
+        raise ValueError
+    return value.quantize(Decimal("0.01"))
+
+
+@router.post("/portal/admin/partners/{partner_id}/percentage")
+async def set_partner_percentage(
+    partner_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    """Each report version keeps the percentage it used; earlier versions never change."""
+
+    record, user = _require_partner_admin(db, request)
+    form = await _form(request)
+    _csrf(form, record)
+    back = form.get("back", "")
+    target = back if back.startswith("/portal/imports/") and "//" not in back else None
+    try:
+        value = _percentage(form.get("percentage", ""))
+    except (ArithmeticError, ValueError):
+        return _partner_admin_page(
+            db,
+            user,
+            record.csrf_token,
+            error="Informe um percentual entre 0 e 100, por exemplo 10 ou 12,5.",
+            status_code=400,
+        )
+    partner = db.get(Partner, partner_id, with_for_update=True)
+    if (
+        partner is None
+        or partner.deleted_at is not None
+        or partner.status != "active"
+        or partner.external_id.startswith(SYNTHETIC_PREFIX)
+    ):
+        raise HTTPException(status_code=404, detail="Parceiro não encontrado")
+    if partner.partnership_percentage != value:
+        partner.partnership_percentage = value
+        _audit_commit(
+            db,
+            request,
+            "partner_percentage_changed",
+            actor_user_id=user.id,
+            entity_type="partner",
+            entity_id=partner.id,
+        )
+    else:
+        db.rollback()
+    return RedirectResponse(target or "/portal/admin/partners", status_code=303)
 
 
 @router.post("/portal/partners/{partner_id}/versions/{version_id}/restore")

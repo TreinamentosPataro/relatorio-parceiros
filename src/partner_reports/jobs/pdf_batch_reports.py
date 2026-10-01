@@ -1,4 +1,4 @@
-"""Idempotent local job for approved synthetic PDF batches."""
+"""Idempotent job turning an approved PDF batch into the ADR-007 partner report."""
 
 import asyncio
 import uuid
@@ -16,7 +16,10 @@ from partner_reports.persistence.models import (
     ReportGenerationRequest,
     ReportVersion,
 )
-from partner_reports.reports.render import generate_pdf, render_html, to_partner_report
+from partner_reports.reports.partner_render import (
+    generate_partner_report_pdf,
+    render_partner_report_html,
+)
 from partner_reports.web.artifacts import build_artifact_store
 
 
@@ -125,14 +128,15 @@ async def process_claimed_pdf_batch(
                 + 1
             )
             generated_at = datetime.now(UTC)
-            internal = data.build(generated_at=generated_at, version=next_version)
             failure_code = "UNSAFE_REPORT"
-            report = to_partner_report(internal)
-            customer_count = report.metrics.unique_customers.value
-            case_count = report.metrics.lawsuits.value
-            html = render_html(internal).encode("utf-8")
+            report = data.build_full(generated_at=generated_at, version=next_version)
+            customer_count = report.indicators.clients
+            case_count = report.indicators.cases
+            html = render_partner_report_html(report).encode("utf-8")
         failure_code = "PDF_FAILED"
-        pdf = await asyncio.wait_for((pdf_renderer or generate_pdf)(internal), timeout=240)
+        pdf = await asyncio.wait_for(
+            (pdf_renderer or generate_partner_report_pdf)(report), timeout=240
+        )
         object_key, content_hash = store.write_generated(html, pdf)
         failure_code = "COMMIT_FAILED"
         with sessions() as db, db.begin():
@@ -165,6 +169,7 @@ async def process_claimed_pdf_batch(
                     pdf_batch_id=data.batch_id,
                     customer_count=customer_count,
                     case_count=case_count,
+                    partnership_percentage=report.percentage,
                 )
             )
             current.status = "succeeded"

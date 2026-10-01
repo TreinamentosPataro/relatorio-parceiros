@@ -1,16 +1,18 @@
-"""Scoped PDF-batch report input; only structured, minimized fields cross the boundary."""
+"""Scoped PDF-batch report input: approved portfolio lawsuits and their ADR-007 fields."""
 
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from partner_reports.config import AppEnvironment, Settings
+from partner_reports.contracts.common import AvailabilityStatus
 from partner_reports.contracts.view_model import InternalReportViewModel
 from partner_reports.domain.report_view import (
     RULE_VERSION,
@@ -24,6 +26,7 @@ from partner_reports.domain.report_view import (
 from partner_reports.partner_scope import partner_in_scope
 from partner_reports.persistence.models import (
     Customer,
+    FinancialTransaction,
     Lawsuit,
     LawsuitCustomer,
     Movement,
@@ -35,6 +38,17 @@ from partner_reports.persistence.models import (
     PdfReconciliationItem,
     PdfReconciliationRun,
     PdfSourceDocument,
+)
+from partner_reports.reports.financial import (
+    FINANCE_RULE_VERSION,
+    FinanceEntry,
+    classify_entry,
+)
+from partner_reports.reports.full_report import (
+    STAGE_RULE_VERSION,
+    CaseInput,
+    PartnerReport,
+    build_partner_report,
 )
 
 _LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
@@ -53,6 +67,9 @@ class BatchReportInput:
     period_start: date
     period_end: date
     snapshot: PortfolioSnapshot
+    partner_name: str = ""
+    percentage: Decimal = Decimal("10.00")
+    cases: tuple[CaseInput, ...] = ()
 
     def build(self, *, generated_at: datetime, version: int) -> InternalReportViewModel:
         return build_internal_report(
@@ -64,6 +81,24 @@ class BatchReportInput:
             link_reference_date=self.period_end,
         )
 
+    def build_full(self, *, generated_at: datetime, version: int) -> PartnerReport:
+        """ADR-007 report over the lawsuits the internal model counts for this partner."""
+
+        internal = self.build(generated_at=generated_at, version=version)
+        if internal.linked_case_ids.status is not AvailabilityStatus.AVAILABLE:
+            raise ValueError("carteira sem vínculo único confirmado")
+        eligible = set(internal.linked_case_ids.value)
+        return build_partner_report(
+            partner_name=self.partner_name,
+            period_start=self.period_start,
+            period_end=self.as_of.astimezone(_LOCAL_ZONE).date(),
+            as_of=self.as_of,
+            generated_at=generated_at,
+            version=version,
+            percentage=self.percentage,
+            cases=tuple(case for case in self.cases if case.lawsuit_id in eligible),
+        )
+
 
 def _synthetic_runtime(environment: AppEnvironment) -> None:
     if not isinstance(environment, AppEnvironment):
@@ -71,8 +106,17 @@ def _synthetic_runtime(environment: AppEnvironment) -> None:
 
 
 def _revision_key(
-    batch: PdfImportBatch, source: PdfSourceDocument, run: PdfReconciliationRun
+    batch: PdfImportBatch,
+    source: PdfSourceDocument,
+    run: PdfReconciliationRun,
+    *,
+    percentage: Decimal,
+    cases: tuple[CaseInput, ...],
 ) -> str:
+    # Any change to what the report shows (movement, entry, percentage) is a new revision.
+    content = hashlib.sha256(
+        json.dumps([asdict(case) for case in cases], default=str, sort_keys=True).encode()
+    ).hexdigest()
     components = {
         "partner": str(batch.partner_id),
         "period_start": batch.period_start.isoformat(),
@@ -80,7 +124,9 @@ def _revision_key(
         "pdf_sha256": source.source_sha256,
         "parser_version": batch.parser_version,
         "api_snapshot_sha256": run.snapshot_sha256,
-        "rule_version": RULE_VERSION,
+        "rule_version": f"{RULE_VERSION}+{STAGE_RULE_VERSION}+{FINANCE_RULE_VERSION}",
+        "partnership_percentage": str(percentage),
+        "report_content_sha256": content,
     }
     return hashlib.sha256(json.dumps(components, sort_keys=True).encode()).hexdigest()
 
@@ -102,9 +148,11 @@ def load_batch_report(
         select(
             Partner.id,
             Partner.external_id,
+            Partner.name,
             Partner.status,
             Partner.deleted_at,
             Partner.pilot_enabled,
+            Partner.partnership_percentage,
         ).where(Partner.id == batch.partner_id)
     ).one_or_none()
     source = db.get(PdfSourceDocument, batch.source_document_id)
@@ -184,7 +232,19 @@ def load_batch_report(
             raise BatchReportUnavailable("vínculo diverge da revisão")
     case_ids = {link.lawsuit_id for link in links}
     lawsuits = db.execute(
-        select(Lawsuit.id, Lawsuit.status, Lawsuit.updated_at).where(Lawsuit.id.in_(case_ids))
+        select(
+            Lawsuit.id,
+            Lawsuit.status,
+            Lawsuit.updated_at,
+            Lawsuit.folder,
+            Lawsuit.process_number,
+            Lawsuit.lawsuit_type_label,
+            Lawsuit.stage_label,
+            Lawsuit.step_label,
+            Lawsuit.responsible_name,
+            Lawsuit.contingency,
+            Lawsuit.fees_expected,
+        ).where(Lawsuit.id.in_(case_ids))
     ).all()
     if len(lawsuits) != len(case_ids) or any(row.status != "active" for row in lawsuits):
         raise BatchReportUnavailable("processo normalizado ausente")
@@ -197,7 +257,7 @@ def load_batch_report(
     ).all()
     customer_ids = {row.customer_id for row in relationships}
     customers = db.execute(
-        select(Customer.id, Customer.status, Customer.updated_at).where(
+        select(Customer.id, Customer.status, Customer.updated_at, Customer.name).where(
             Customer.id.in_(customer_ids)
         )
     ).all()
@@ -213,9 +273,9 @@ def load_batch_report(
         )
     ).all()
     movements = db.execute(
-        select(Movement.lawsuit_id, Movement.occurred_at, Movement.updated_at).where(
-            Movement.lawsuit_id.in_(case_ids)
-        )
+        select(
+            Movement.lawsuit_id, Movement.occurred_at, Movement.updated_at, Movement.title
+        ).where(Movement.lawsuit_id.in_(case_ids))
     ).all()
     as_of = run.snapshot_verified_at.astimezone(UTC)
     normalized_cutoff = run.created_at.astimezone(UTC)
@@ -262,7 +322,73 @@ def load_batch_report(
         for link in links
     ):
         raise BatchReportUnavailable("vínculo fora da carteira ou período")
-    revision_key = _revision_key(batch, source, run)
-    return BatchReportInput(
-        batch.id, partner.id, revision_key, as_of, batch.period_start, batch.period_end, snapshot
+    cases = _case_inputs(db, lawsuits, relationships, customers, movements)
+    revision_key = _revision_key(
+        batch, source, run, percentage=partner.partnership_percentage, cases=cases
     )
+    return BatchReportInput(
+        batch.id,
+        partner.id,
+        revision_key,
+        as_of,
+        batch.period_start,
+        batch.period_end,
+        snapshot,
+        partner_name=partner.name,
+        percentage=partner.partnership_percentage,
+        cases=cases,
+    )
+
+
+def _case_inputs(db: Session, lawsuits, relationships, customers, movements) -> tuple:
+    names = {row.id: row.name for row in customers}
+    latest: dict[uuid.UUID, tuple[datetime, str | None]] = {}
+    for row in movements:
+        if row.lawsuit_id not in latest or row.occurred_at > latest[row.lawsuit_id][0]:
+            latest[row.lawsuit_id] = (row.occurred_at, row.title)
+    entries: dict[uuid.UUID, list[FinanceEntry]] = {row.id: [] for row in lawsuits}
+    for row in db.scalars(
+        select(FinancialTransaction)
+        .where(FinancialTransaction.lawsuit_id.in_(list(entries)))
+        .order_by(FinancialTransaction.advbox_id)
+    ):
+        kind = classify_entry(row.entry_type, row.category)
+        if kind is not None:
+            entries[row.lawsuit_id].append(
+                FinanceEntry(
+                    kind=kind,
+                    category=row.category,
+                    description=row.description,
+                    date_due=row.date_due,
+                    date_payment=row.date_payment,
+                    amount=row.amount,
+                )
+            )
+    cases = []
+    for row in sorted(lawsuits, key=lambda item: item.id.hex):
+        customer_ids = tuple(
+            sorted(
+                (rel.customer_id for rel in relationships if rel.lawsuit_id == row.id),
+                key=lambda identifier: identifier.hex,
+            )
+        )
+        movement = latest.get(row.id)
+        cases.append(
+            CaseInput(
+                lawsuit_id=row.id,
+                customer_ids=customer_ids,
+                customer_names=tuple(names[item] for item in customer_ids if names.get(item)),
+                folder=row.folder,
+                process_number=row.process_number,
+                action=row.lawsuit_type_label,
+                step=row.step_label,
+                stage=row.stage_label,
+                responsible=row.responsible_name,
+                contingency=row.contingency,
+                fees_expected=row.fees_expected,
+                last_movement_at=movement[0] if movement else None,
+                last_movement_title=movement[1] if movement else None,
+                entries=tuple(entries[row.id]),
+            )
+        )
+    return tuple(cases)

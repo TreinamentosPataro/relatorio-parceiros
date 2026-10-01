@@ -155,10 +155,13 @@ def test_approved_batch_generates_one_private_version_and_keeps_prior_on_failure
     assert version.customer_count == 1 and version.case_count == 1
     store = SyntheticArtifactStore(tmp_path, AppEnvironment.TEST)
     html = store.read(version.storage_object_key, "html").decode()
-    assert "1 casos" in html
-    assert "Nome sintético" not in html
-    assert "Andamento sintético" not in html
+    # ADR-007: client name and last movement are shown; entries outside the
+    # accounting categories never are.
+    assert "Carteira sintética" in html
+    assert "Nome sintético" in html
+    assert "Andamento sintético" in html
     assert "Categoria sintética" not in html
+    assert "Nenhum lançamento de honorários" in html
     assert not enqueue_approved_batch(db_session, batch.id, environment=AppEnvironment.TEST)
     version.status = "superseded"
     db_session.flush()
@@ -256,12 +259,11 @@ def test_approved_batch_generates_real_a4_pdf_without_restricted_fields(
     version = db_session.scalar(select(ReportVersion).where(ReportVersion.pdf_batch_id == batch.id))
     path = tmp_path / "pdf" / f"generated_{version.storage_object_key.rsplit('/', 1)[1]}.pdf"
     reader = PdfReader(path)
-    assert len(reader.pages) == 1
-    page = reader.pages[0]
-    assert round(float(page.mediabox.width)) == 595
-    assert round(float(page.mediabox.height)) == 842
-    text = page.extract_text() or ""
-    assert "SYNTHETIC-PDF-SIX" in text
-    assert "Nome sintético" not in text
-    assert "Andamento sintético" not in text
+    assert 1 <= len(reader.pages) <= 3
+    for page in reader.pages:
+        assert round(float(page.mediabox.width)) == 595
+        assert round(float(page.mediabox.height)) == 842
+    text = " ".join(page.extract_text() or "" for page in reader.pages)
+    assert "Carteira sintética" in text
+    assert "Nome sintético" in text
     assert "Categoria sintética" not in text
