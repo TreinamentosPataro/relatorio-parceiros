@@ -540,36 +540,33 @@ def _month_period(value: str) -> tuple[date, date]:
     return start, min(end, today)
 
 
-_MONTH_ABBREVIATIONS = (
-    "jan",
-    "fev",
-    "mar",
-    "abr",
-    "mai",
-    "jun",
-    "jul",
-    "ago",
-    "set",
-    "out",
-    "nov",
-    "dez",
+_MONTH_NAMES = (
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
 )
 
 
 def _recent_months(count: int = 12) -> list[dict[str, str]]:
-    """Month buttons for the upload form, newest first (the browser picker is not themable)."""
+    """Month options for the upload form, newest first (the browser picker is not themable)."""
 
     today = _today()
     months = []
     year, month = today.year, today.month
     for _ in range(count):
-        months.append(
-            {
-                "value": f"{year:04d}-{month:02d}",
-                "label": _MONTH_ABBREVIATIONS[month - 1],
-                "year": str(year),
-            }
-        )
+        label = f"{_MONTH_NAMES[month - 1].capitalize()} de {year:04d}"
+        if (year, month) == (today.year, today.month):
+            label += " (até hoje)"
+        months.append({"value": f"{year:04d}-{month:02d}", "label": label})
         year, month = (year - 1, 12) if month == 1 else (year, month - 1)
     return months
 

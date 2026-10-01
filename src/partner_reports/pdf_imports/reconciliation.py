@@ -4,6 +4,7 @@ import hashlib
 import json
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -101,11 +102,49 @@ class EnrichmentCoverage:
     last_movements_found: int
 
 
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _identifiers_only(raw: dict) -> ApiCandidate:
+    """Keep a lawsuit with a malformed descriptive field matchable, without its details.
+
+    The read covers every lawsuit of the office; one record edited with an unexpected
+    value must not block reports for portfolios that do not even contain it.
+    """
+    external_id = raw.get("id")
+    if not isinstance(external_id, int) or isinstance(external_id, bool) or external_id <= 0:
+        raise AdvboxUnexpectedResponse("processo sem ID técnico válido")
+    related = raw.get("customers")
+    customer_ids = tuple(
+        sorted(
+            {
+                customer["customer_id"]
+                for customer in (related if isinstance(related, list) else [])
+                if isinstance(customer, Mapping)
+                and isinstance(customer.get("customer_id"), int)
+                and not isinstance(customer.get("customer_id"), bool)
+                and customer["customer_id"] > 0
+            }
+        )
+    )
+    encoded = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str)
+    return ApiCandidate(
+        external_id=external_id,
+        process_number_normalized=normalize_process_number(
+            _optional_text(raw.get("process_number"))
+        ),
+        folder_exact=normalize_folder(_optional_text(raw.get("folder"))),
+        record_digest=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        customer_external_ids=customer_ids,
+    )
+
+
 def _project_lawsuit(raw: dict) -> ApiCandidate:
     try:
         normalized = normalize_record("lawsuits", raw)
     except (AdvboxUnexpectedResponse, ValidationError):
-        raise AdvboxUnexpectedResponse("processo fora do contrato técnico") from None
+        return _identifiers_only(raw)
     return ApiCandidate(
         external_id=normalized.external_id,
         process_number_normalized=normalize_process_number(normalized.process_number),
@@ -137,11 +176,14 @@ async def advance_scan(client: AdvboxClient, checkpoint: ScanCheckpoint) -> Scan
     projected = tuple(_project_lawsuit(raw) for raw in records)
     existing_ids = {candidate.external_id for candidate in checkpoint.candidates}
     new_ids = [candidate.external_id for candidate in projected]
-    if len(new_ids) != len(set(new_ids)) or existing_ids.intersection(new_ids):
+    if len(new_ids) != len(set(new_ids)):
         raise AdvboxUnexpectedResponse("ID técnico duplicado na fotografia")
+    if existing_ids.intersection(new_ids):
+        # A lawsuit created or removed during the read shifts the offset pages.
+        raise AdvboxSourceChanged("páginas deslocadas durante a fotografia")
     next_offset = checkpoint.next_offset + len(projected)
     if next_offset == total and len(checkpoint.candidates) + len(projected) != total:
-        raise AdvboxUnexpectedResponse("fotografia técnica incompleta")
+        raise AdvboxSourceChanged("fotografia técnica incompleta")
     return ScanCheckpoint(next_offset, total, checkpoint.candidates + projected)
 
 

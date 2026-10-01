@@ -1675,6 +1675,8 @@ def test_home_offers_upload_to_admins_only_with_themed_month_grid(portal) -> Non
     home = client.get("/portal/partners").text
     assert 'action="/portal/imports/new"' in home
     assert 'type="month"' not in home
-    assert home.count('name="period_month"') == 12
-    assert f'value="{_today():%Y-%m}" checked' in home
+    assert home.count('name="period_month"') == 1
+    assert 'class="month-chip"' not in home
+    assert f'<option value="{_today():%Y-%m}" selected>' in home
+    assert "(até hoje)" in home
     assert f'<option value="{partner.id}"' in home

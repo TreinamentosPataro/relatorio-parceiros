@@ -386,3 +386,88 @@ def test_only_manifest_lawsuits_must_agree_between_reads() -> None:
     with pytest.raises(AdvboxSourceChanged):
         # The manifest lawsuit itself changed: the read is refused.
         asyncio.run(read(RelevantKeys.from_manifest((_item(None, "OUTRA-PASTA"),))))
+
+
+def _serve(rows_for_offset) -> AdvboxClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        rows, total = rows_for_offset(offset)
+        return httpx.Response(
+            200,
+            json={
+                "data": rows,
+                "totalCount": total,
+                "limit": int(request.url.params["limit"]),
+                "offset": offset,
+            },
+        )
+
+    return AdvboxClient(
+        _settings(),
+        transport=httpx.MockTransport(handler),
+        limiter=ConservativeRateLimiter(20, sleep=lambda _: asyncio.sleep(0), clock=lambda: 0),
+    )
+
+
+def test_malformed_lawsuit_outside_portfolio_does_not_block_the_read() -> None:
+    number = "1234567-89.2026.1.23.4567"
+    malformed = {
+        **_api_row(2, folder="PASTA-02"),
+        "fees_expec": "1.500,00",
+        "process_date": "31/02/2026",
+        "contingency": 5,
+    }
+    rows = [_api_row(1, number=number, folder="PASTA-01"), malformed]
+
+    async def read() -> ApiSnapshot:
+        client = _serve(lambda _offset: (rows, len(rows)))
+        try:
+            return await collect_verified_snapshot(
+                client, relevant=RelevantKeys.from_manifest((_item(number, "PASTA-01"),))
+            )
+        finally:
+            await client.aclose()
+
+    snapshot = asyncio.run(read())
+    by_id = {candidate.external_id: candidate for candidate in snapshot.candidates}
+    assert snapshot.total == 2
+    assert by_id[1].detail is not None
+    # Still matchable by its identifiers, but its descriptive fields are not trusted.
+    assert by_id[2].detail is None
+    assert by_id[2].folder_exact == "PASTA-02"
+    assert by_id[2].customer_external_ids == (2,)
+    results = reconcile_items((_item(number, "PASTA-01"), _item(None, "PASTA-02")), snapshot)
+    assert [result.matched_advbox_id for result in results] == [1, 2]
+
+    without_id = [{**_api_row(3, folder="PASTA-03"), "id": "3"}]
+
+    async def reject() -> None:
+        client = _serve(lambda _offset: (without_id, 1))
+        try:
+            with pytest.raises(AdvboxUnexpectedResponse, match="ID técnico"):
+                await advance_scan(client, ScanCheckpoint())
+        finally:
+            await client.aclose()
+
+    asyncio.run(reject())
+
+
+def test_lawsuit_created_during_read_is_a_source_change() -> None:
+    rows = [
+        _api_row(index, folder=f"PASTA-{index:04d}") for index in range(1, SNAPSHOT_PAGE_SIZE + 2)
+    ]
+
+    def shifted(offset: int) -> tuple[list[dict], int]:
+        # A new lawsuit pushed the last row of page one onto page two.
+        page = rows[:SNAPSHOT_PAGE_SIZE] if offset == 0 else rows[offset - 1 : offset]
+        return page, len(rows)
+
+    async def read() -> None:
+        client = _serve(shifted)
+        try:
+            with pytest.raises(AdvboxSourceChanged):
+                await collect_verified_snapshot(client)
+        finally:
+            await client.aclose()
+
+    asyncio.run(read())

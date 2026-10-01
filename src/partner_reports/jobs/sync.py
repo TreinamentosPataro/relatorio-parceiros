@@ -22,6 +22,7 @@ from partner_reports.integrations.advbox.client import (
     AdvboxClient,
     AdvboxRateLimitError,
     AdvboxServerError,
+    AdvboxSourceChanged,
     AdvboxTransportError,
     AdvboxUnexpectedResponse,
 )
@@ -69,9 +70,9 @@ def _page(payload: Any, *, requested_offset: int, requested_limit: int) -> tuple
     if payload.get("offset") != requested_offset or payload.get("limit") != requested_limit:
         raise AdvboxUnexpectedResponse("offset/limit da resposta divergentes")
     if requested_offset < total and not records:
-        raise AdvboxUnexpectedResponse("página vazia antes de totalCount")
+        raise AdvboxSourceChanged("página vazia antes de totalCount")
     if requested_offset + len(records) > total:
-        raise AdvboxUnexpectedResponse("página excedeu totalCount")
+        raise AdvboxSourceChanged("página excedeu totalCount")
     return records, total
 
 
