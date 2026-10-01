@@ -139,6 +139,9 @@ def _synthetic_source_pdf() -> bytes:
 def test_login_catalog_search_and_detail(portal) -> None:
     client, partner_a, partner_b, _ = portal
     assert client.get("/portal/partners").status_code == 401
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code == 303
+    assert root.headers["location"] == "/portal/login"
     response = _login(client)
     assert response.status_code == 303
     assert "Secure" in response.headers["set-cookie"]
@@ -153,6 +156,9 @@ def test_login_catalog_search_and_detail(portal) -> None:
     assert "Histórico de versões" in detail.text
     assert "v1" in detail.text
     assert "Regenerar apenas este parceiro" not in detail.text
+    signed_in = client.get("/", follow_redirects=True)
+    assert signed_in.status_code == 200
+    assert str(signed_in.url).endswith("/portal/partners")
 
 
 def test_private_pilot_scope_uses_database_flag(portal, db_session: Session) -> None:

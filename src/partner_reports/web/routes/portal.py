@@ -636,6 +636,12 @@ async def change_password(request: Request, db: Session = _DB_DEPENDENCY) -> Res
     return response
 
 
+@router.get("/", include_in_schema=False)
+def site_root() -> Response:
+    # The login page forwards an authenticated session to the catalog.
+    return RedirectResponse("/portal/login", status_code=303)
+
+
 @router.get("/portal")
 def portal_home() -> Response:
     return RedirectResponse("/portal/partners", status_code=303)
