@@ -5,6 +5,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,6 +37,8 @@ from partner_reports.persistence.models import (
     PdfSourceDocument,
 )
 
+_LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
+
 
 class BatchReportUnavailable(ValueError):
     """The approved synthetic batch does not have a complete technical snapshot."""
@@ -48,6 +51,7 @@ class BatchReportInput:
     revision_key: str
     as_of: datetime
     period_start: date
+    period_end: date
     snapshot: PortfolioSnapshot
 
     def build(self, *, generated_at: datetime, version: int) -> InternalReportViewModel:
@@ -57,6 +61,7 @@ class BatchReportInput:
             period_start=self.period_start,
             generated_at=generated_at,
             report_version=version,
+            link_reference_date=self.period_end,
         )
 
 
@@ -123,7 +128,8 @@ def load_batch_report(
         or run.result_total != batch.parsed_item_count
         or run.snapshot_total < run.result_total
         or run.snapshot_verified_at.tzinfo is None
-        or run.snapshot_verified_at.astimezone(UTC).date() != batch.period_end
+        # A closed period may be read later; a snapshot before its end cannot prove it.
+        or run.snapshot_verified_at.astimezone(_LOCAL_ZONE).date() < batch.period_end
     ):
         raise BatchReportUnavailable("fotografia da API incompleta ou fora do período")
     manifest_flags = db.scalars(
@@ -257,4 +263,6 @@ def load_batch_report(
     ):
         raise BatchReportUnavailable("vínculo fora da carteira ou período")
     revision_key = _revision_key(batch, source, run)
-    return BatchReportInput(batch.id, partner.id, revision_key, as_of, batch.period_start, snapshot)
+    return BatchReportInput(
+        batch.id, partner.id, revision_key, as_of, batch.period_start, batch.period_end, snapshot
+    )

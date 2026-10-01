@@ -337,3 +337,34 @@ def test_partner_preview_cannot_be_marked_publishable() -> None:
     assert report is not None
     with pytest.raises(ValidationError):
         ReportViewModel.model_validate({**report.model_dump(), "publication_ready": True})
+
+
+def test_closed_period_links_are_counted_on_reference_date_not_snapshot_day() -> None:
+    period_end = AS_OF.date() - timedelta(days=1)
+    snapshot = _snapshot(
+        customer_numbers=(101,),
+        case_customers=((201, (101,)),),
+        links=(_link("lawsuit", 201, valid_from=date(2026, 9, 1), valid_to=period_end),),
+    )
+    on_snapshot_day = _build(snapshot).partner_preview
+    assert on_snapshot_day is not None
+    assert on_snapshot_day.metrics.lawsuits.value == 0
+    on_period_end = build_internal_report(
+        snapshot,
+        as_of=AS_OF,
+        period_start=date(2026, 9, 1),
+        generated_at=AS_OF + timedelta(minutes=1),
+        link_reference_date=period_end,
+    ).partner_preview
+    assert on_period_end is not None
+    assert on_period_end.metrics.lawsuits.value == 1
+    assert on_period_end.metadata.value.period_end == AS_OF.date()
+    for invalid in (date(2026, 8, 31), AS_OF.date() + timedelta(days=1)):
+        with pytest.raises(ValueError, match="referência"):
+            build_internal_report(
+                snapshot,
+                as_of=AS_OF,
+                period_start=date(2026, 9, 1),
+                generated_at=AS_OF + timedelta(minutes=1),
+                link_reference_date=invalid,
+            )

@@ -112,7 +112,7 @@ def _missing(*, as_of: datetime, source: str, reason: str) -> ReportValue:
 
 
 def _classify(
-    snapshot: PortfolioSnapshot, as_of: datetime
+    snapshot: PortfolioSnapshot, link_day: date
 ) -> tuple[dict[uuid.UUID, set[uuid.UUID]], dict[uuid.UUID, set[uuid.UUID]], int, int, int]:
     customer_ids = {customer.id for customer in snapshot.customers}
     case_ids = {case.id for case in snapshot.cases}
@@ -125,7 +125,7 @@ def _classify(
     nonexistent_links = 0
     nonexistent_target_links = 0
     for link in snapshot.links:
-        if not link.is_effective_on(as_of.date()):
+        if not link.is_effective_on(link_day):
             continue
         if link.entity_type == "customer" and link.entity_id in customer_partners:
             customer_partners[link.entity_id].add(link.partner_id)
@@ -162,13 +162,21 @@ def build_internal_report(
     period_start: date,
     generated_at: datetime,
     report_version: int = 1,
+    link_reference_date: date | None = None,
 ) -> InternalReportViewModel:
-    """Return audit-safe quality data and a partner preview only behind technical gates."""
+    """Return audit-safe quality data and a partner preview only behind technical gates.
+
+    Links are evaluated on ``link_reference_date`` (default: the cut-off date), so a
+    closed period can be reported from an official snapshot read after it ended.
+    """
 
     if as_of.tzinfo is None or generated_at.tzinfo is None:
         raise ValueError("instantes do relatório exigem fuso horário")
     if period_start > as_of.date() or generated_at < as_of or report_version < 1:
         raise ValueError("período, geração ou versão inválidos")
+    link_day = as_of.date() if link_reference_date is None else link_reference_date
+    if not period_start <= link_day <= as_of.date():
+        raise ValueError("data de referência dos vínculos fora do período")
     if snapshot.source_synced_at is not None and snapshot.source_synced_at.tzinfo is None:
         raise ValueError("sincronização exige fuso horário")
     if snapshot.linkage_validated_at is not None and snapshot.linkage_validated_at.tzinfo is None:
@@ -185,7 +193,7 @@ def build_internal_report(
         missing_references,
         nonexistent_links,
         nonexistent_target_links,
-    ) = _classify(snapshot, as_of)
+    ) = _classify(snapshot, link_day)
     target = snapshot.partner_id
     eligible_case_ids = tuple(
         sorted(

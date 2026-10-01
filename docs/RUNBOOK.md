@@ -87,7 +87,7 @@ O `docker-compose.yml` raiz usa bind mount e continua exclusivo de desenvolvimen
 
 No host inventariado, copie `deploy/production.env.example` e `deploy/restic.env.example` para arquivos protegidos fora do Git, substitua os marcadores sem imprimir os valores e forneça `APP_IMAGE`, `CADDY_IMAGE`, `POSTGRES_IMAGE`, `BACKUP_IMAGE`, `RESTIC_CONFIG_DIR`, `RESTIC_ENV_FILE` e, no staging local, `RESTIC_TEST_REPOSITORY_DIR` pelo ambiente do operador. Quando o piloto privado receber GO, `deploy/advbox.env.example` também deverá originar um arquivo `600` exclusivo do worker. Credenciais Restic e Advbox não entram em `production.env`. Valide antes de subir:
 
-O runtime atualmente implantado na VPS permanece em `PDF_DATA_SCOPE=synthetic_only`. O código local já reconhece `private_pilot`, mas essa opção não deve ser promovida enquanto persistência normalizada, relatório, identidade e controles finais não forem aprovados.
+Desde 30/09/2026, a VPS opera em `PDF_DATA_SCOPE=private_pilot`, ativado por `ops/set-data-scope.sh` (ver abaixo). Parceiros reais só entram no fluxo depois de cadastrados e liberados no portal (ADR-005).
 
 ```sh
 docker compose -f compose.production.yml -f compose.staging.yml config --quiet
@@ -105,7 +105,7 @@ sudo install -m 0755 /tmp/deploy-synthetic-runtime.sh /opt/partner-reports/ops/d
 sudo /opt/partner-reports/ops/deploy-synthetic-runtime.sh /tmp/partner-reports-synthetic-runtime.tar.gz
 ```
 
-O atualizador recusa execução fora de `/opt/partner-reports`, pacotes com caminhos de segredo, backup concorrente e configuração incompleta. Ele constrói e testa a imagem antes da troca, pausa o timer, preserva os arquivos de ambiente, força `APP_ENV=production` e `PDF_DATA_SCOPE=synthetic_only`, aplica migrations, valida saúde interna/pública e reativa o timer. Se uma verificação posterior à troca falhar, restaura arquivos, imagem e ambiente anteriores. O diretório de rollback informado ao final deve ser preservado até a validação funcional do portal. Remova os dois arquivos temporários de `/tmp` somente depois dessa validação.
+O atualizador recusa execução fora de `/opt/partner-reports`, pacotes com caminhos de segredo, backup concorrente e configuração incompleta. Ele constrói e testa a imagem antes da troca, pausa o timer, preserva os arquivos de ambiente, força `APP_ENV=production`, mantém o `PDF_DATA_SCOPE` ativo, aplica migrations, valida saúde interna/pública e reativa o timer. Se uma verificação posterior à troca falhar, restaura arquivos, imagem e ambiente anteriores. O diretório de rollback informado ao final deve ser preservado até a validação funcional do portal. Remova os dois arquivos temporários de `/tmp` somente depois dessa validação.
 
 Desde o ADR-006, o atualizador também pausa `partner-reports-worker.timer`, se instalado, e recusa promover enquanto o worker estiver em execução. Proxy e app compartilham somente a rede interna `ingress` (`INGRESS_SUBNET`, padrão `10.254.18.0/29`); antes da primeira promoção com essa rede, confirme que a sub-rede não colide com redes existentes no host (`docker network inspect` das redes do outro projeto).
 

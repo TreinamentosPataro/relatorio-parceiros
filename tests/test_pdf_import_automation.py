@@ -4,6 +4,7 @@ import asyncio
 import io
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from partner_reports.integrations.advbox.config import AdvboxAuditSettings
 from partner_reports.jobs.automation import process_one
 from partner_reports.jobs.pdf_batch_reports import enqueue_approved_batch
 from partner_reports.pdf_imports.automation import process_one_pdf_import
+from partner_reports.pdf_imports.reporting import BatchReportUnavailable
 from partner_reports.pdf_imports.review_service import approve_batch
 from partner_reports.pdf_imports.service import receive_pdf
 from partner_reports.pdf_imports.storage import LocalPrivatePdfStorage
@@ -95,6 +97,8 @@ def _create_batch(
     external_id: str,
     digest_variant: bytes = b"",
     pilot_enabled: bool = True,
+    period_start: date = date(2026, 9, 1),
+    period_end: date = date(2026, 9, 30),
 ) -> PdfImportBatch:
     partner = Partner(
         external_id=external_id,
@@ -110,8 +114,8 @@ def _create_batch(
         storage,
         validate_pdf(content),
         partner_id=partner.id,
-        period_start=date(2026, 9, 1),
-        period_end=date(2026, 9, 30),
+        period_start=period_start,
+        period_end=period_end,
         uploaded_by=uploader.id,
     )
     db.flush()
@@ -283,6 +287,7 @@ def test_worker_resumes_from_parsed_boundary_after_api_failure(
 def test_private_pilot_review_links_and_minimized_report(db_session: Session, tmp_path) -> None:
     settings = _settings()
     storage = LocalPrivatePdfStorage(tmp_path / "pdf", AppEnvironment.TEST)
+    # Closed September period read afterwards: links count on the period end.
     batch = _create_batch(db_session, storage, external_id="PILOT-001")
     reviewer = AppUser(external_subject=f"local:review-{uuid.uuid4().hex}", status="active")
     db_session.add(reviewer)
@@ -350,3 +355,47 @@ def test_private_pilot_review_links_and_minimized_report(db_session: Session, tm
     assert b"RESTRICTED-NOT-PERSISTED" not in html
     assert b"12345678920261234567" not in html
     assert b"PASTA-01" not in html
+
+
+def test_report_refuses_period_still_open_at_snapshot(db_session: Session, tmp_path) -> None:
+    settings = _settings()
+    storage = LocalPrivatePdfStorage(tmp_path / "pdf", AppEnvironment.TEST)
+    today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    batch = _create_batch(
+        db_session,
+        storage,
+        external_id="PILOT-OPEN",
+        period_start=today,
+        period_end=today + timedelta(days=1),
+    )
+    reviewer = AppUser(external_subject=f"local:review-{uuid.uuid4().hex}", status="active")
+    db_session.add(reviewer)
+    db_session.flush()
+
+    async def process_import() -> str:
+        client = AdvboxClient(_api_settings(), transport=httpx.MockTransport(_success_handler([])))
+        try:
+            return await process_one_pdf_import(_sessions(db_session), settings, storage, client)
+        finally:
+            await client.aclose()
+
+    assert asyncio.run(process_import()) == "succeeded"
+    db_session.expire_all()
+    batch = db_session.get(PdfImportBatch, batch.id)
+    approve_batch(
+        db_session,
+        batch.id,
+        batch.review_revision,
+        reviewer.id,
+        environment=AppEnvironment.TEST,
+        four_eyes=False,
+        settings=settings,
+    )
+    with pytest.raises(BatchReportUnavailable, match="fora do período"):
+        enqueue_approved_batch(
+            db_session,
+            batch.id,
+            environment=AppEnvironment.TEST,
+            requested_by=reviewer.id,
+            settings=settings,
+        )
