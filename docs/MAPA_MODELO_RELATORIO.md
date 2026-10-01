@@ -80,10 +80,10 @@ A classificação vem de um **mapa de fases** guardado no banco e editável no p
 | RH/FINANCEIRO | Venda concluída (à vista/recorrente) | Fora dos indicadores (consultoria vendida) |
 | ARQUIVAMENTO | Analisado e não distribuído; Arquivado por determinação judicial; Arquivado/encerrado; Arquivado por desinteresse | Arquivado |
 
-## 5. Pontos para confirmação
+## 5. Confirmações do responsável (01/10/2026)
 
-1. As regras dos três indicadores (seção 3) e o mapa de fases (seção 4).
-2. Imposto fixo de 7,5% sobre o valor pago, e taxas bancárias descontadas antes do percentual.
-3. Percentual por parceiro com exceção por processo; os modelos tinham parceiro com mais de um percentual.
-4. Exibir "Responsável", "Contingenciamento" e "Valor informado", que estavam no modelo.
-5. "Status executivo" substituído por fase oficial + último andamento (data e título).
+1. **Confirmado:** regras dos três indicadores (seção 3) e mapa de fases (seção 4).
+2. **Confirmado:** imposto de 7,5% sobre o valor pago e taxas bancárias descontadas antes do percentual, como nos modelos.
+3. **Em aberto:** o percentual da parceria não existe na API e será cadastrado no portal. Falta confirmar se cada parceiro tem um percentual único ou se há exceção por processo.
+4. **Confirmado:** exibir "Responsável", "Contingenciamento" e "Valor informado".
+5. **Confirmado:** "Status executivo" substituído por fase oficial + último andamento (data e título).

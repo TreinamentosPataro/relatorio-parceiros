@@ -23,6 +23,8 @@ A API pública do Advbox não indica a qual parceiro pertence um processo (audit
 
 ## Pendências desta decisão (F2)
 
+Atualização de 01/10/2026: as regras dos indicadores, o cálculo sobre o valor líquido (imposto de 7,5% e taxas bancárias), as colunas Responsável/Contingenciamento/Valor informado e a troca do status executivo por fase + último andamento foram confirmados (ver `docs/MAPA_MODELO_RELATORIO.md`, seção 5). Continua em aberto apenas a forma de cadastro do percentual da parceria. Registro original das pendências:
+
 - Regras dos indicadores. Proposta: "Benefício concedido" e "Em judicial" a partir de um mapa de fases do Advbox classificado uma vez no portal (com número CNJ como sinal de judicial); "Em financeiro" para processo com honorário de entrada não interno ainda sem pagamento.
 - Prestação de contas. Proposta: percentual cadastrado por parceiro sobre os honorários recebidos; lançamentos de saída "Honorários de Parceiros" contam como repasse já pago. Falta decidir se o percentual incide sobre o valor bruto ou líquido de taxas.
 - Retenção dos dados financeiros agora persistidos. Proposta: o mesmo prazo da carteira normalizada (12 meses após substituição), a confirmar.
