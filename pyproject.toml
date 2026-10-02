@@ -46,7 +46,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "partner_reports.reports" = ["templates/*.j2", "assets/*.css"]
-"partner_reports.web" = ["templates/*.j2", "assets/*.css"]
+"partner_reports.web" = ["templates/*.j2", "assets/*.css", "assets/*.js"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

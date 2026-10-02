@@ -8,50 +8,42 @@
 <body>
   {% include "_header.html.j2" %}
   <main class="container" id="main">
-    <div class="page-heading"><div><p class="eyebrow">Início</p><h1>Relatórios de parceiros</h1><p class="muted">{% if is_admin %}Envie o PDF do parceiro, acompanhe a conferência e baixe o relatório pronto.{% else %}Consulte os relatórios prontos de cada parceiro.{% endif %}</p></div></div>
+    <div class="page-heading home-heading"><div><p class="eyebrow">Início</p><h1>Relatórios de parceiros</h1><p class="muted">{% if is_admin %}Escolha o parceiro e o mês, envie o PDF e baixe o relatório quando ficar pronto.{% else %}Consulte os relatórios prontos de cada parceiro.{% endif %}</p></div></div>
     {% if demo %}<div class="notice" role="status"><strong>Ambiente de prévia sintética.</strong> Nenhum dado real ou relatório externo está publicado.</div>{% endif %}
 
     {% if is_admin %}
-    <section class="home-section" aria-labelledby="novo">
-      <div class="section-heading"><h2 id="novo">Novo relatório</h2></div>
-      <div class="panel upload-panel">{% set partners = upload_partners %}{% if partners %}{% include "_upload_form.html.j2" %}{% else %}<p class="empty-line">Nenhum parceiro liberado ainda. Cadastre e libere em <a href="/portal/admin/partners">Parceiros</a>.</p>{% endif %}</div>
+    <section class="home-section reveal" aria-labelledby="novo">
+      <div class="panel upload-panel hero-card">
+        <div class="hero-card-head"><h2 id="novo">Novo relatório</h2><p class="muted">Três passos. A conferência no Advbox começa sozinha.</p></div>
+        {% set partners = upload_partners %}{% if partners %}{% include "_upload_form.html.j2" %}{% else %}<p class="empty-line">Nenhum parceiro ativo ainda. Cadastre em <a href="/portal/admin/partners">Parceiros</a>.</p>{% endif %}
+      </div>
     </section>
 
-    <section class="home-section" aria-labelledby="atencao">
-      <div class="section-heading"><h2 id="atencao">Precisa da sua atenção{% if attention %}<span class="badge">{{ attention|length }}</span>{% endif %}</h2></div>
-      {% if attention %}<div class="task-list">{% for item in attention %}<article class="task is-attention"><div class="task-main"><strong>{{ item.partner.name }}</strong><span>{{ item.label }} · período {{ item.batch.period_start|data }} a {{ item.batch.period_end|data }} · enviado em {{ item.batch.created_at|datahora }}</span></div><div class="action-group"><a class="button button-primary" href="/portal/imports/{{ item.batch.id }}">{{ item.action }}</a></div></article>{% endfor %}</div>
-      {% else %}<p class="empty-line">Nada pendente. Os envios que precisarem de você aparecem aqui.</p>{% endif %}
-    </section>
-
-    {% if in_progress %}
-    <section class="home-section" aria-labelledby="andamento">
-      <div class="section-heading"><h2 id="andamento">Em andamento</h2><a class="row-action" href="/portal/partners">Atualizar</a></div>
-      <div class="task-list">{% for item in in_progress %}<article class="task"><div class="task-main"><strong>{{ item.partner.name }}</strong><span>{{ item.label }} · enviado em {{ item.batch.created_at|datahora }}</span></div><div class="action-group"><a class="button button-secondary" href="/portal/imports/{{ item.batch.id }}">Acompanhar</a></div></article>{% endfor %}</div>
-    </section>
-    {% endif %}
+    <section class="home-section reveal" aria-labelledby="atencao">
+        <div class="section-heading"><h2 id="atencao">Precisa da sua atenção{% if attention %}<span class="badge">{{ attention|length }}</span>{% endif %}</h2></div>
+        {% if attention or in_progress %}<div class="task-list">
+          {% for item in attention %}<a class="task is-attention" href="/portal/imports/{{ item.batch.id }}"><span class="status-dot is-alert" aria-hidden="true"></span><span class="task-main"><strong>{{ item.partner.name }}</strong><span>{{ item.label }} · {{ item.batch.period_start|data }} a {{ item.batch.period_end|data }}</span></span><span class="task-cta">{{ item.action }} <span aria-hidden="true">→</span></span></a>{% endfor %}
+          {% if in_progress %}<p class="task-group-label" id="andamento">Em andamento</p>{% for item in in_progress %}<a class="task" href="/portal/imports/{{ item.batch.id }}"><span class="status-dot is-working" aria-hidden="true"></span><span class="task-main"><strong>{{ item.partner.name }}</strong><span>{{ item.label }} · enviado em {{ item.batch.created_at|datahora }}</span></span><span class="task-cta">Acompanhar <span aria-hidden="true">→</span></span></a>{% endfor %}{% endif %}
+        </div>
+        {% else %}<div class="empty-card"><span class="status-dot is-ok" aria-hidden="true"></span><p class="empty-line">Nada pendente. Os envios que precisarem de você aparecem aqui.</p></div>{% endif %}
+      </section>
     {% endif %}
 
-    <section class="home-section" aria-labelledby="prontos">
-      <div class="section-heading"><h2 id="prontos">Relatórios prontos</h2></div>
-      {% if ready %}<div class="task-list">{% for item in ready %}<article class="task"><div class="task-main"><strong>{{ item.partner.name }}</strong><span>Período {{ item.version.period_start|data }} a {{ item.version.period_end|data }} · gerado em {{ item.version.generated_at|datahora }}</span></div><div class="action-group"><a class="button button-primary" href="/portal/partners/{{ item.partner.id }}/versions/{{ item.version.id }}/html">Ver</a><a class="button button-secondary" href="/portal/partners/{{ item.partner.id }}/versions/{{ item.version.id }}/pdf">PDF</a></div></article>{% endfor %}</div>
-      {% else %}<p class="empty-line">Nenhum relatório gerado ainda.</p>{% endif %}
-    </section>
 
-    <section class="home-section" aria-labelledby="parceiros">
-      <div class="section-heading"><h2 id="parceiros">Parceiros</h2><span class="muted">{{ total }} parceiro{{ 's' if total != 1 else '' }}</span></div>
-      <div class="panel filters">
-        <form method="get" action="/portal/partners" class="filter-form">
-          <div class="field field-search"><label for="q">Buscar parceiro</label><input id="q" name="q" value="{{ query }}" maxlength="100" placeholder="Nome do parceiro"></div>
-          <div class="field"><label for="status">Situação do relatório</label><select id="status" name="status"><option value="todos" {% if status == 'todos' %}selected{% endif %}>Todas as situações</option>{% for item in ['atualizado', 'desatualizado', 'gerando', 'erro', 'sem relatório'] %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|capitalize }}</option>{% endfor %}</select></div>
+    <section class="home-section reveal" aria-labelledby="parceiros">
+      <div class="section-heading"><h2 id="parceiros">Parceiros <span class="count-inline">{{ total }}</span></h2>
+        <form method="get" action="/portal/partners#parceiros" class="search-inline" role="search">
+          <label for="q" class="visually-hidden">Buscar parceiro</label><input id="q" name="q" value="{{ query }}" maxlength="100" placeholder="Buscar parceiro">
+          <label for="status" class="visually-hidden">Situação do relatório</label><select id="status" name="status"><option value="todos" {% if status == 'todos' %}selected{% endif %}>Todas as situações</option>{% for item in ['atualizado', 'desatualizado', 'gerando', 'erro', 'sem relatório'] %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|capitalize }}</option>{% endfor %}</select>
           <button class="button button-secondary" type="submit">Buscar</button>
         </form>
       </div>
       <div class="panel list-panel" aria-label="Resultados">
         {% if rows %}<div class="table-wrap"><table><thead><tr><th scope="col">Parceiro</th><th scope="col">Relatório</th><th scope="col">Último relatório</th><th scope="col"><span class="visually-hidden">Ação</span></th></tr></thead><tbody>
         {% for row in rows %}<tr><td data-label="Parceiro"><a class="partner-link" href="/portal/partners/{{ row.partner.id }}">{{ row.partner.name }}</a></td><td data-label="Relatório"><span class="status-pill">{{ row.status|capitalize }}</span></td><td data-label="Último relatório">{% if row.version %}{{ row.version.generated_at|data }}{% else %}—{% endif %}</td><td data-label="Ação"><a class="row-action" href="/portal/partners/{{ row.partner.id }}">Abrir <span aria-hidden="true">→</span></a></td></tr>{% endfor %}
-        </tbody></table></div>{% else %}<div class="empty-state"><span aria-hidden="true">⌕</span><h3>Nenhum parceiro encontrado</h3><p>{% if query or status != 'todos' %}Altere a busca ou o filtro de situação.{% else %}Cadastre e libere parceiros em “Parceiros”, no menu.{% endif %}</p></div>{% endif %}
+        </tbody></table></div>{% else %}<div class="empty-state"><span aria-hidden="true">⌕</span><h3>Nenhum parceiro encontrado</h3><p>{% if query or status != 'todos' %}Altere a busca ou o filtro de situação.{% else %}Cadastre e ative parceiros em “Parceiros”, no menu.{% endif %}</p></div>{% endif %}
       </div>
-      <nav class="pagination" aria-label="Paginação"><span>Página {{ page }} de {{ total_pages }}</span><div>{% if page > 1 %}<a href="?q={{ query|urlencode }}&status={{ status|urlencode }}&page={{ page - 1 }}#parceiros">Anterior</a>{% endif %}{% if page < total_pages %}<a href="?q={{ query|urlencode }}&status={{ status|urlencode }}&page={{ page + 1 }}#parceiros">Próxima</a>{% endif %}</div></nav>
+      {% if total_pages > 1 %}<nav class="pagination" aria-label="Paginação"><span>Página {{ page }} de {{ total_pages }}</span><div>{% if page > 1 %}<a href="?q={{ query|urlencode }}&status={{ status|urlencode }}&page={{ page - 1 }}#parceiros">Anterior</a>{% endif %}{% if page < total_pages %}<a href="?q={{ query|urlencode }}&status={{ status|urlencode }}&page={{ page + 1 }}#parceiros">Próxima</a>{% endif %}</div></nav>{% endif %}
     </section>
   </main>
   <footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>

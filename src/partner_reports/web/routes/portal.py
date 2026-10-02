@@ -352,8 +352,8 @@ def _batch_stage(
     return "processing"
 
 
-def _work_queue(db: Session, settings: Settings) -> tuple[list[dict], list[dict], list[dict]]:
-    """Home dashboard: uploads needing a person, uploads the system is handling, ready reports."""
+def _work_queue(db: Session, settings: Settings) -> tuple[list[dict], list[dict]]:
+    """Home dashboard: uploads needing a person and uploads the system is handling."""
 
     attention: list[dict] = []
     in_progress: list[dict] = []
@@ -435,22 +435,7 @@ def _work_queue(db: Session, settings: Settings) -> tuple[list[dict], list[dict]
                         "action": "Gerar relatório",
                     }
                 )
-    ready = [
-        {"version": version, "partner": partner}
-        for version, partner in db.execute(
-            select(ReportVersion, Partner)
-            .join(Partner, Partner.id == ReportVersion.partner_id)
-            .where(
-                partner_scope_clause(settings),
-                Partner.status == "active",
-                Partner.deleted_at.is_(None),
-                ReportVersion.status.in_(("validated", "published")),
-            )
-            .order_by(ReportVersion.generated_at.desc())
-            .limit(6)
-        ).all()
-    ]
-    return attention, in_progress, ready
+    return attention, in_progress
 
 
 def _catalog(db: Session, query: str, status: str, settings: Settings) -> list[dict]:
@@ -514,6 +499,26 @@ def _active_partners(db: Session, settings: Settings) -> list[Partner]:
         )
         .order_by(Partner.name, Partner.external_id)
     ).all()
+
+
+def _ready_reports(db: Session, settings: Settings, limit: int = 100) -> list[dict]:
+    """Most recent validated or published versions of active partners, newest first."""
+
+    return [
+        {"version": version, "partner": partner}
+        for version, partner in db.execute(
+            select(ReportVersion, Partner)
+            .join(Partner, Partner.id == ReportVersion.partner_id)
+            .where(
+                partner_scope_clause(settings),
+                Partner.status == "active",
+                Partner.deleted_at.is_(None),
+                ReportVersion.status.in_(("validated", "published")),
+            )
+            .order_by(ReportVersion.generated_at.desc())
+            .limit(limit)
+        ).all()
+    ]
 
 
 def _nav(db: Session, user: AppUser, settings: Settings, active: str) -> dict:
@@ -654,6 +659,12 @@ def _audit_commit(
 def css() -> Response:
     content = _ASSETS.joinpath("assets", "portal.css").read_text(encoding="utf-8")
     return Response(content, media_type="text/css")
+
+
+@router.get("/portal/assets.js")
+def js() -> Response:
+    content = _ASSETS.joinpath("assets", "portal.js").read_text(encoding="utf-8")
+    return Response(content, media_type="text/javascript")
 
 
 @router.get("/portal/login")
@@ -851,7 +862,7 @@ def partners(
     shown = rows[(page - 1) * _PAGE_SIZE : page * _PAGE_SIZE]
     settings = request.app.state.settings
     nav = _nav(db, user, settings, "partners")
-    attention, in_progress, ready = _work_queue(db, settings)
+    attention, in_progress = _work_queue(db, settings)
     response = _render(
         "partners.html.j2",
         user=user,
@@ -865,12 +876,27 @@ def partners(
         demo=settings.synthetic_validation_only,
         attention=attention if nav["is_admin"] else [],
         in_progress=in_progress if nav["is_admin"] else [],
-        ready=ready,
         upload_partners=_active_partners(db, settings) if nav["is_admin"] else [],
         months=_recent_months(),
         selected=None,
         max_mib=MAX_PDF_BYTES // (1024 * 1024),
         **nav,
+    )
+    _audit_commit(db, request, "catalog_view", actor_user_id=user.id)
+    return response
+
+
+@router.get("/portal/reports")
+def ready_reports(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _need_user(db, request)
+    settings = request.app.state.settings
+    response = _render(
+        "reports.html.j2",
+        user=user,
+        csrf=record.csrf_token,
+        ready=_ready_reports(db, settings),
+        demo=settings.synthetic_validation_only,
+        **_nav(db, user, settings, "reports"),
     )
     _audit_commit(db, request, "catalog_view", actor_user_id=user.id)
     return response

@@ -5,7 +5,7 @@
   {% include "_header.html.j2" %}
   <main class="container" id="main">
     <a class="back-link" href="/portal/partners">← Relatórios</a>
-    <div class="page-heading detail-heading"><div><p class="eyebrow">Parceiro</p><h1>{{ partner.name }}</h1></div>{% if is_admin %}<a class="button button-primary" href="/portal/imports/new?parceiro={{ partner.id }}">Novo relatório</a>{% endif %}</div>
+    <div class="page-heading detail-heading compact-heading"><div><p class="eyebrow">Parceiro</p><h1>{{ partner.name }}</h1></div>{% if is_admin %}<a class="button button-primary" href="/portal/imports/new?parceiro={{ partner.id }}">Novo relatório</a>{% endif %}</div>
     {% if demo %}<div class="notice" role="status"><strong>Prévia sintética.</strong> Arquivos de demonstração locais; nenhuma publicação real.</div>{% endif %}
     <section class="panel action-panel" aria-label="Relatório atual">
       {% if latest_valid %}

@@ -11,12 +11,13 @@
 {% set position = {'processing': 1, 'failed': 1, 'issues': 2, 'blocked': 2, 'ready': 2, 'approved': 3, 'generating': 3, 'generation_failed': 3, 'done': 4, 'rejected': 0, 'superseded': 0}[stage] %}
 <main class="container" id="main">
   <a class="back-link" href="/portal/partners/{{ partner.id }}">← {{ partner.name }}</a>
-  <div class="page-heading"><div><p class="eyebrow">Envio de {{ batch.created_at|datahora }}</p><h1>{{ partner.name }}</h1><p class="muted">Período {{ batch.period_start|data }} a {{ batch.period_end|data }}</p></div></div>
+  <div class="page-heading compact-heading"><div><p class="eyebrow">Envio de {{ batch.created_at|datahora }}</p><h1>{{ partner.name }}</h1><p class="muted">Período {{ batch.period_start|data }} a {{ batch.period_end|data }}</p></div></div>
   {% if repeated %}<div class="notice" role="status"><strong>Este PDF já tinha sido enviado.</strong> Veja abaixo a situação do envio.</div>{% endif %}
   {% if notice %}<div class="notice" role="alert">{{ notice }}</div>{% endif %}
-  {% if position %}<ol class="flow-steps" aria-label="Etapas">{% for key, label in steps %}<li class="{% if loop.index < position or stage == 'done' %}is-done{% elif loop.index == position %}is-current{% endif %}" {% if loop.index == position %}aria-current="step"{% endif %}>{{ label }}</li>{% endfor %}</ol>{% endif %}
+  {% if position %}<ol class="flow-steps" aria-label="Etapas">{% for key, label in steps %}<li class="{% if loop.index < position or stage == 'done' %}is-done{% elif loop.index == position %}is-current{% endif %}" {% if loop.index == position %}aria-current="step"{% endif %}><span class="flow-mark" aria-hidden="true"></span><span class="flow-label">{{ label }}</span></li>{% endfor %}</ol>{% endif %}
 
-  <section class="panel flow-panel" aria-live="polite">
+{% set tone = {'processing': 'working', 'generating': 'working', 'failed': 'alert', 'generation_failed': 'alert', 'issues': 'alert', 'blocked': 'alert', 'ready': 'ok', 'done': 'ok', 'approved': 'ok'}.get(stage, 'neutral') %}
+  <section class="panel flow-panel tone-{{ tone }}" aria-live="polite"><span class="flow-icon" aria-hidden="true"></span><div class="flow-body">
   {% if stage == 'processing' %}
     <h2>Conferindo o PDF no Advbox</h2>
     <p>Estamos lendo os processos do PDF e conferindo cada um no Advbox. Isso costuma levar alguns minutos.</p>
@@ -78,7 +79,7 @@
     <p>Um envio mais recente do mesmo período substituiu este.</p>
     <div class="action-group"><a class="button button-primary" href="/portal/partners/{{ partner.id }}">Ver relatórios do parceiro</a></div>
   {% endif %}
-  </section>
+  </div></section>
 
   <details class="technical-details">
     <summary>Detalhes técnicos</summary>

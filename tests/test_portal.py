@@ -636,6 +636,7 @@ def test_pdf6_portal_layout_with_long_synthetic_name(portal, db_session: Session
                             })"""
                         )
                         assert overflow["width"] <= overflow["viewport"], (name, size, overflow)
+                        await page.wait_for_timeout(1200)  # Let the entrance animation finish.
                         await page.screenshot(
                             path=str(output / f"pdf6_{name}_{size}.png"), full_page=True
                         )
@@ -1242,7 +1243,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
     assert "#F4AA27" in css
     assert "#FFC14D" in css
     assert "#0A0A0A" in css
-    assert "#EDEDED" in css
+    assert "#FFFFFF" in css
     assert "appearance:none" in css
     assert "scrollbar-color:var(--gold)" in css
     assert "select option:checked" in css
@@ -1255,6 +1256,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         "home_admin": home_admin_html,
         "batch": batch_html,
         "partner_admin": partner_admin_html,
+        "reports": client.get("/portal/reports").text,
     }
 
     async def check() -> None:
@@ -1276,11 +1278,11 @@ def test_portal_visual_layout_and_palette(portal) -> None:
                         size = await page.evaluate(
                             "({scroll:document.documentElement.scrollWidth,inner:innerWidth})"
                         )
-                        assert size["scroll"] <= size["inner"]
+                        assert size["scroll"] <= size["inner"], view
                         background = await page.locator("body").evaluate(
                             "element => getComputedStyle(element).backgroundColor"
                         )
-                        assert background == "rgb(10, 10, 10)"
+                        assert background == "rgb(255, 255, 255)"
                         if await page.locator(".button-primary").count():
                             await page.locator(".button-primary").first.hover()
                             await page.wait_for_function(
@@ -1300,6 +1302,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
                                 await box.evaluate("el => getComputedStyle(el).backgroundColor")
                                 == "rgb(244, 170, 39)"
                             )
+                        await page.wait_for_timeout(1200)  # Let the entrance animation finish.
                         await page.screenshot(
                             path=str(output / f"{view}_{label}.png"), full_page=True
                         )
@@ -1405,6 +1408,7 @@ def test_pdf_review_visual_layout(portal, db_session: Session) -> None:
                             "({scroll:document.documentElement.scrollWidth,inner:innerWidth})"
                         )
                         assert size["scroll"] <= size["inner"]
+                        await page.wait_for_timeout(1200)  # Let the entrance animation finish.
                         await page.screenshot(
                             path=str(output / f"pdf4_{view}_{label}.png"), full_page=True
                         )
@@ -1668,8 +1672,10 @@ def test_home_offers_upload_to_admins_only_with_themed_month_grid(portal) -> Non
     viewer_home = client.get("/portal/partners").text
     assert 'action="/portal/imports/new"' not in viewer_home
     assert "Precisa da sua atenção" not in viewer_home
-    assert "Relatórios prontos" in viewer_home
-    assert f"versions/{version.id}/pdf" in viewer_home
+    assert "/portal/reports" in viewer_home
+    reports_page = client.get("/portal/reports").text
+    assert "Relatórios prontos" in reports_page
+    assert f"versions/{version.id}/pdf" in reports_page
     client.post("/portal/logout", data={"csrf": _csrf(viewer_home)})
     _login(client, "synthetic-admin", "synthetic-long-password-admin")
     home = client.get("/portal/partners").text

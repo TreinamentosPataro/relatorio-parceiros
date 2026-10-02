@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relatórios prontos · Relatórios de parceiros</title>
+  <link rel="stylesheet" href="/portal/assets.css">
+</head>
+<body>
+  {% include "_header.html.j2" %}
+  <main class="container" id="main">
+    <div class="page-heading"><div><p class="eyebrow">Relatórios prontos</p><h1>Relatórios prontos</h1><p class="muted">Os relatórios gerados mais recentes. Confira o conteúdo antes de enviar ao parceiro.</p></div></div>
+    {% if demo %}<div class="notice" role="status"><strong>Ambiente de prévia sintética.</strong> Nenhum dado real ou relatório externo está publicado.</div>{% endif %}
+    <section class="home-section" aria-label="Relatórios prontos">
+      {% if ready %}<div class="ready-list">{% for item in ready %}<article class="ready-item"><div class="task-main"><strong>{{ item.partner.name }}</strong><span>{{ item.version.period_start|data }} a {{ item.version.period_end|data }} · gerado em {{ item.version.generated_at|datahora }}</span></div><div class="ready-actions"><a class="chip-button is-primary" href="/portal/partners/{{ item.partner.id }}/versions/{{ item.version.id }}/html">Ver</a><a class="chip-button" href="/portal/partners/{{ item.partner.id }}/versions/{{ item.version.id }}/pdf">PDF</a></div></article>{% endfor %}</div>
+      {% else %}<div class="empty-card"><p class="empty-line">Nenhum relatório gerado ainda.{% if is_admin %} Envie o PDF de um parceiro em <a href="/portal/partners">Início</a>.{% endif %}</p></div>{% endif %}
+    </section>
+  </main>
+  <footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
+</body>
+</html>
