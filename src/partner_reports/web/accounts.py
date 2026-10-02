@@ -38,6 +38,8 @@ class AccountRow:
     login_name: str
     is_admin: bool
     pending_link: PortalAccessLink | None
+    # Latest unused link that ran out of time; the account itself never expires.
+    expired_link: PortalAccessLink | None = None
 
 
 def _unusable_password() -> str:
@@ -99,7 +101,19 @@ def list_accounts(db: Session) -> list[AccountRow]:
             .order_by(PortalAccessLink.created_at.desc())
             .limit(1)
         )
-        result.append(AccountRow(user, login_name, "portal_admin" in _roles(db, user.id), pending))
+        expired = None
+        if pending is None and user.status == "active":
+            latest = db.scalar(
+                select(PortalAccessLink)
+                .where(PortalAccessLink.user_id == user.id)
+                .order_by(PortalAccessLink.created_at.desc())
+                .limit(1)
+            )
+            if latest is not None and latest.used_at is None:
+                expired = latest
+        result.append(
+            AccountRow(user, login_name, "portal_admin" in _roles(db, user.id), pending, expired)
+        )
     return result
 
 

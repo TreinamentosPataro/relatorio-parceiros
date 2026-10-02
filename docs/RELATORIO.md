@@ -8,7 +8,7 @@
 
 O cabeçalho mostra código técnico do parceiro, período, atualização e versão. O corpo traz resumo e cartões de clientes únicos/processos distintos, alertas de qualidade, tabela de casos com referências pseudonimizadas e data do último registro cronológico, e metodologia/fonte/corte. O HTML oferece detalhes recolhíveis e associação cliente–processo para carteiras pequenas. Na impressão a associação separada é omitida porque a própria tabela contém o vínculo; detalhes recolhíveis também não entram no PDF. O status executivo permanece “Em revisão”, sem inferência jurídica. A seção financeira permanece bloqueada no portão PDF-5, mesmo que um valor sintético declare fonte `approved_financial_rule`: P-006/P-007 ainda não foram aprovadas. Distribuições e KPIs jurídicos continuam ausentes ou marcados como pendentes até aprovação formal de regras/categorias.
 
-O CSS usa fontes do sistema, não carrega CDN ou recurso remoto, adapta a largura de tela e possui regras A4 de impressão. A identidade preto/dourado/texto claro está registrada em `docs/DESIGN_SYSTEM.md`; em telas estreitas, processos viram cartões rotulados, enquanto no PDF os cabeçalhos de tabela se repetem e linhas não devem ser partidas entre páginas. O Chromium aborta requisições externas na geração do PDF.
+O CSS usa fontes do sistema, não carrega CDN ou recurso remoto, adapta a largura de tela e possui regras A4 de impressão. A identidade clara (fundo branco, texto preto e dourado; decisão de 02/10/2026) está registrada em `docs/DESIGN_SYSTEM.md`; em telas estreitas, processos viram cartões rotulados, enquanto no PDF os cabeçalhos de tabela se repetem e linhas não devem ser partidas entre páginas. O Chromium aborta requisições externas na geração do PDF.
 
 ## Portão de privacidade
 

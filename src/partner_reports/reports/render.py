@@ -300,14 +300,13 @@ async def generate_pdf(
     )
 
 
-async def html_to_pdf(
-    html: str, *, footer_label: str, light: bool = False, executable_path: str | None = None
-) -> bytes:
+async def html_to_pdf(html: str, *, footer_label: str, executable_path: str | None = None) -> bytes:
     """Print self-contained HTML to A4 with all network requests blocked."""
 
     from playwright.async_api import async_playwright
 
-    colors = "color:#5C5C5C;background:#FFFFFF;" if light else "color:#EDEDED;background:#0A0A0A;"
+    # Reports always print on white, like the portal (decision of 02/10/2026).
+    colors = "color:#5C5C5C;background:#FFFFFF;"
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless=True,

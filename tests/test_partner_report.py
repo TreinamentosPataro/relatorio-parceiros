@@ -171,3 +171,13 @@ def test_report_rejects_inconsistent_instants() -> None:
             percentage=Decimal("10"),
             cases=(),
         )
+
+
+def test_partner_report_uses_the_light_identity() -> None:
+    from importlib.resources import files
+
+    css = files("partner_reports.reports").joinpath("assets/partner_report.css").read_text()
+    # Reports are never shown on a dark primary background (decision of 02/10/2026).
+    assert "color:var(--text);background:var(--white)" in css
+    assert "--white:#FFFFFF" in css and "--text:#0A0A0A" in css
+    assert "#EDEDED" not in css and "background:var(--black)" not in css

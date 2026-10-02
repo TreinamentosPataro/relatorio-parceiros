@@ -1,6 +1,6 @@
 # Status do projeto
 
-**Atualizado em:** 01/10/2026
+**Atualizado em:** 02/10/2026
 **Escopo acompanhado:** etapas 0 a 12 do plano original e trilha PDF-0 a PDF-9 do plano revisado  
 **Estado geral:** etapas 0 a 10 e PDF-1 a PDF-7 concluídas tecnicamente. O runtime de produção do PDF-8 está publicado na VPS sob escopo exclusivamente sintético, com backup R2 `EU` e restauração validados. Localmente, `private_pilot` já possui allowlist fail-closed, worker retomável, persistência normalizada mínima, revisão/vínculo auditados, geração privada minimizada e restauração íntegra/auditada. A VPS não recebeu essa versão; identidade individual, controles operacionais finais, promoção e homologação ainda estão pendentes. Nenhuma versão real foi publicada nem dado real foi copiado.
 
@@ -301,3 +301,10 @@ O PDF-7 permanece concluído e a infraestrutura sintética do PDF-8 está funcio
 ## Observação de escopo
 
 O Prompt 13 do plano original permanece apenas como histórico. O go-live agora é a etapa PDF-9 e só entra em execução após a homologação PDF-7 e a infraestrutura PDF-8.
+
+## Ajustes de 02/10/2026 (fora das etapas numeradas)
+
+- Relatórios do parceiro e prévia sintética passaram ao tema claro do portal (fundo branco) na tela e no PDF, inclusive no rodapé; decisão registrada em `docs/DESIGN_SYSTEM.md`.
+- Contas do portal continuam permanentes; apenas o link de acesso vence em 72 horas. A tela de Usuários passou a mostrar "Convite expirado" / "Link de nova senha expirado" e explica que a conta não expira.
+- Ações da tela de Usuários alinhadas em colunas fixas e centralizadas.
+- Verificação: 252 testes aprovados no Docker local (1 aviso de depreciação de dependência), com dois testes novos (convite expirado mantém a conta; relatório em tema claro) e testes de paleta atualizados. Ruff lint e formatação aprovados. A VPS ainda não recebeu essas mudanças.

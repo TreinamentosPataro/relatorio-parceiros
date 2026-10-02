@@ -77,6 +77,5 @@ async def generate_partner_report_pdf(
     return await html_to_pdf(
         render_partner_report_html(report),
         footer_label=f"{report.partner_name} · versão {report.version}",
-        light=True,
         executable_path=executable_path,
     )

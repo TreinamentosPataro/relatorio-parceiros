@@ -243,8 +243,10 @@ def test_pdf_text_contains_only_safe_synthetic_projection() -> None:
 
 def test_approved_palette_and_hover_token_scope() -> None:
     css = files("partner_reports.reports").joinpath("assets/report.css").read_text()
-    for color in ("#F4AA27", "#FFC14D", "#0A0A0A", "#EDEDED"):
+    for color in ("#F4AA27", "#FFC14D", "#8A5A00", "#0A0A0A", "#FFFFFF"):
         assert color in css
+    # Reports never use a dark primary background (decision of 02/10/2026).
+    assert "#EDEDED" not in css and "background:var(--black)" not in css
     assert css.count("#FFC14D") == 1
     assert ".button-primary:hover{background:var(--gold-hover)" in css
 
@@ -310,9 +312,9 @@ def test_palette_is_applied_in_browser() -> None:
                 await browser.close()
 
     assert asyncio.run(inspect()) == (
+        "rgb(255, 255, 255)",
         "rgb(10, 10, 10)",
-        "rgb(237, 237, 237)",
-        "rgb(244, 170, 39)",
+        "rgb(138, 90, 0)",
         "rgb(244, 170, 39)",
         "rgb(255, 193, 77)",
     )

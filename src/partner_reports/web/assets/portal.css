@@ -224,3 +224,6 @@ button.chip-button.is-primary{background:var(--gold)}
 @media(max-width:760px){.main-nav{flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none}.main-nav::-webkit-scrollbar{display:none}.main-nav a{flex:1 0 auto}}
 .person{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}.person strong{font-weight:650}
 @media(max-width:760px){.person{align-items:flex-end;text-align:right}}
+/* Usuários: cada tipo de ação ocupa sempre a mesma coluna, centralizado nela (02/10/2026). */
+.row-actions{display:grid;grid-template-columns:10rem 10.75rem 6.25rem;justify-content:end;justify-items:center;align-items:center;gap:6px}.row-actions .chip-button{white-space:nowrap}.row-actions form:last-child{grid-column:3}
+@media(max-width:760px){.row-actions{display:flex;flex-wrap:wrap;justify-content:flex-end}}

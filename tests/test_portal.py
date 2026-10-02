@@ -1770,6 +1770,47 @@ def test_admin_invites_account_and_holder_defines_own_password(portal, db_sessio
     assert token not in stored
 
 
+def test_expired_invite_keeps_account_and_admin_reissues_link(portal, db_session) -> None:
+    from sqlalchemy import update
+
+    from partner_reports.persistence.models import PortalAccessLink
+
+    client, *_ = portal
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get("/portal/admin/users")
+    assert "As contas não expiram" in page.text
+    created = client.post(
+        "/portal/admin/users",
+        data={"csrf": _csrf(page.text), "name": "Conta Sintética", "login": "conta.sintetica"},
+    )
+    assert "A conta não expira" in created.text
+    token = _access_token(created.text)
+    account = db_session.scalar(
+        select(AppUser)
+        .join(PortalCredential, PortalCredential.user_id == AppUser.id)
+        .where(PortalCredential.login_name == "conta.sintetica")
+    )
+    db_session.execute(
+        update(PortalAccessLink)
+        .where(PortalAccessLink.user_id == account.id)
+        .values(expires_at=datetime(2000, 1, 1, tzinfo=UTC))
+    )
+    db_session.commit()
+
+    listing = client.get("/portal/admin/users").text
+    assert "Convite expirado" in listing
+    db_session.refresh(account)
+    assert account.status == "active"
+    assert client.get(f"/portal/access/{token}").status_code == 404
+
+    again = client.post(f"/portal/admin/users/{account.id}/link", data={"csrf": _csrf(listing)})
+    assert again.status_code == 200
+    assert "Convite pendente" in client.get("/portal/admin/users").text
+    client.post("/portal/logout", data={"csrf": _csrf(listing)})
+    assert _redeem(client, _access_token(again.text), "senha-sintetica-longa").status_code == 303
+    assert _login(client, "conta.sintetica", "senha-sintetica-longa").status_code == 303
+
+
 def test_reset_link_replaces_password_and_older_links(portal, db_session) -> None:
     from partner_reports.persistence.models import PortalAccessLink
 

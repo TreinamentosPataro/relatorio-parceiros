@@ -33,3 +33,8 @@ Os tokens estão em `src/partner_reports/reports/assets/report.css` e `src/partn
 - **Envio:** etapas em círculos ligados por uma linha; a etapa atual pulsa e as concluídas mostram ✓. O cartão de situação tem ícone por tom (processando, atenção, pronto). Nomes longos ficam em até duas linhas.
 - **Movimento:** entrada suave dos blocos, brilho dourado lento no fundo, elevação de cartões e botões ao passar o mouse, brilho no botão principal e indicador de envio em andamento. Tudo é CSS, exceto `portal.js` (só realça a área do PDF e mostra o nome do arquivo); sem o script, os formulários funcionam igual. `prefers-reduced-motion` desliga as animações.
 - A paleta continua com os quatro tokens; as novas superfícies usam apenas transparências deles. Sem fontes ou scripts externos, compatível com a CSP `default-src 'self'`.
+
+## Revisão de 02/10/2026: relatórios sempre em fundo branco
+
+- **Decisão do responsável:** nenhum relatório é gerado ou exibido com preto como cor primária. O relatório do parceiro (`partner_report.css`) e a prévia sintética (`report.css`) seguem o tema claro do portal na tela e no PDF: fundo `#FFFFFF`, texto `#0A0A0A`, dourado `#F4AA27` em bordas, preenchimentos e botões, e `#8A5A00` para texto dourado. O rodapé do PDF também é claro. Isso substitui a regra anterior de "fundo preto também na impressão".
+- **Usuários:** as ações de cada conta ficam em colunas fixas (link, papel, ativar/desativar), centralizadas em cada coluna, para que botões de larguras diferentes continuem alinhados entre as linhas.

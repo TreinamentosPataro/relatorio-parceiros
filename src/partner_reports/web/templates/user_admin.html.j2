@@ -13,7 +13,7 @@
     {% if issued %}
     <section class="panel issued-card" aria-labelledby="link-title" role="status">
       <h2 id="link-title">{{ 'Conta criada. ' if issued.purpose == 'invite' and not error else '' }}Envie este link para {{ issued.name }}</h2>
-      <p class="muted">Login: <strong>{{ issued.login }}</strong> · funciona uma única vez e vale por {{ link_hours }} horas.{% if issued.purpose == 'reset' %} A senha anterior já deixou de valer.{% endif %} Este link só aparece agora; se perder, gere outro.</p>
+      <p class="muted">Login: <strong>{{ issued.login }}</strong> · funciona uma única vez e vale por {{ link_hours }} horas.{% if issued.purpose == 'reset' %} A senha anterior já deixou de valer.{% endif %} Este link só aparece agora. A conta não expira: se o link vencer ou se perder, gere outro.</p>
       <div class="copy-line"><label class="visually-hidden" for="access-url">Link de acesso</label><input id="access-url" class="copy-input" value="{{ issued.url }}" readonly data-copy-source><button class="button button-primary" type="button" data-copy-button>Copiar link</button></div>
     </section>
     {% endif %}
@@ -39,7 +39,7 @@
         {% for row in accounts %}{% set me = row.user.id == user.id %}<tr>
           <td data-label="Pessoa"><div class="person"><strong>{{ row.user.display_name or row.login_name }}{% if me %} <span class="muted">(você)</span>{% endif %}</strong><span class="mono muted">{{ row.login_name }}</span></div></td>
           <td data-label="Papel"><span class="status-pill">{{ 'Administrador' if row.is_admin else 'Equipe' }}</span></td>
-          <td data-label="Situação">{% if row.user.status != 'active' %}<span class="status-pill">Desativada</span>{% elif row.pending_link and row.user.last_login_at is none %}<span class="status-pill">Convite pendente</span>{% elif row.pending_link %}<span class="status-pill">Nova senha pendente</span>{% else %}<span class="status-pill">Ativa</span>{% endif %}</td>
+          <td data-label="Situação">{% if row.user.status != 'active' %}<span class="status-pill">Desativada</span>{% elif row.pending_link and row.user.last_login_at is none %}<span class="status-pill">Convite pendente</span>{% elif row.pending_link %}<span class="status-pill">Nova senha pendente</span>{% elif row.expired_link and row.user.last_login_at is none %}<span class="status-pill">Convite expirado</span>{% elif row.expired_link %}<span class="status-pill">Link de nova senha expirado</span>{% else %}<span class="status-pill">Ativa</span>{% endif %}</td>
           <td data-label="Último acesso">{{ row.user.last_login_at|datahora }}</td>
           <td data-label="Ações">{% if not me %}<div class="row-actions">
             {% if row.user.status == 'active' %}<form method="post" action="/portal/admin/users/{{ row.user.id }}/link"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="chip-button is-primary" type="submit"{% if row.user.last_login_at is not none %} data-confirm="A senha atual de {{ row.user.display_name or row.login_name }} deixa de valer agora. Continuar?"{% endif %}>{{ 'Novo convite' if row.user.last_login_at is none else 'Link de nova senha' }}</button></form>
@@ -49,7 +49,7 @@
         </tr>{% endfor %}
         </tbody></table></div>
       </div>
-      <p class="muted small-note">Desativar encerra as sessões na hora. O papel novo vale a partir do próximo login. O portal sempre mantém pelo menos um administrador ativo.</p>
+      <p class="muted small-note">As contas não expiram; só o link de acesso vence. Desativar encerra as sessões na hora. O papel novo vale a partir do próximo login. O portal sempre mantém pelo menos um administrador ativo.</p>
     </section>
   </main>
   <footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
