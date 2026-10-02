@@ -123,7 +123,9 @@ Os pacotes gerados no Windows não preservam o bit de execução; execute os scr
 
 ### Contas e senhas
 
-Cada usuário troca a própria senha em **Alterar senha**, no cabeçalho do portal: exige a senha atual, usa o mesmo limitador do login e encerra as outras sessões da conta. Na VPS, o operador do host lista contas e recupera uma senha esquecida sem precisar de outro administrador (evento `password_reset`, sessões da conta revogadas):
+Desde 02/10/2026 (D-055), contas são gerenciadas no próprio portal, em **Usuários** (somente administradores): criar a conta gera um link de convite de uso único, válido por 72 horas, que o administrador envia à pessoa; ela mesma define a senha. **Link de nova senha** invalida a senha atual e as sessões da conta e gera um novo link; gerar outro link invalida o anterior. Desativar encerra as sessões na hora; o papel novo vale no próximo login. O portal não deixa a conta desativar ou rebaixar a si mesma e sempre mantém um administrador ativo. Só o SHA-256 do token é guardado; o link aparece uma única vez na tela de quem o gerou e nunca em logs ou na auditoria (eventos `account_created`, `access_link_issued`, `access_link_redeemed`, `account_enabled`, `account_disabled`, `account_role_changed`). Recomenda-se manter pelo menos dois administradores.
+
+Cada usuário troca a própria senha em **Senha**, no cabeçalho do portal: exige a senha atual, usa o mesmo limitador do login e encerra as outras sessões da conta. O comando abaixo fica como acesso de emergência (por exemplo, se nenhum administrador conseguir entrar): na VPS, o operador do host lista contas e recupera uma senha esquecida sem precisar de outro administrador (evento `password_reset`, sessões da conta revogadas):
 
 ```sh
 PR="sudo docker compose --project-directory /opt/partner-reports --env-file /opt/partner-reports/deploy/compose.env -f /opt/partner-reports/compose.production.yml --profile operations run --rm migrate python -m partner_reports.web.user_cli"

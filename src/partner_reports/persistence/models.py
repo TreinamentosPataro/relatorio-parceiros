@@ -170,6 +170,27 @@ class PortalSession(UuidPrimaryKeyMixin, Base):
     )
 
 
+class PortalAccessLink(UuidPrimaryKeyMixin, Base):
+    """One-time invite or reset link; only the SHA-256 of the token is stored."""
+
+    __tablename__ = "portal_access_links"
+    __table_args__ = (CheckConstraint("purpose IN ('invite', 'reset')", name="purpose_values"),)
+
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(10), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class PortalLoginAttempt(UuidPrimaryKeyMixin, Base):
     __tablename__ = "portal_login_attempts"
 

@@ -150,8 +150,9 @@ def test_login_catalog_search_and_detail(portal) -> None:
     assert "SameSite=strict" in response.headers["set-cookie"]
     result = client.get("/portal/partners?q=Alfa&status=atualizado")
     assert result.status_code == 200
-    assert partner_a.name in result.text
-    assert partner_b.name not in result.text
+    results = result.text.split('aria-label="Resultados"', 1)[1]
+    assert partner_a.name in results
+    assert partner_b.name not in results
     detail = client.get(f"/portal/partners/{partner_a.id}")
     assert detail.status_code == 200
     assert "Histórico de versões" in detail.text
@@ -347,9 +348,7 @@ def test_artifact_is_scoped_to_partner_and_local_synthetic(portal) -> None:
         )
 
 
-def test_pdf_batch_report_requires_admin_and_checks_artifact_integrity(
-    portal, db_session: Session
-) -> None:
+def test_pdf_batch_report_checks_role_and_artifact_integrity(portal, db_session: Session) -> None:
     import hashlib
 
     client, partner, _, version = portal
@@ -383,9 +382,17 @@ def test_pdf_batch_report_requires_admin_and_checks_artifact_integrity(
     detail = client.get(f"/portal/partners/{partner.id}")
     assert f"versions/{version.id}/pdf" in detail.text
     assert source.storage_object_key not in detail.text
+    # The team role may generate (D-056): the refusal here is the batch state, not the role.
     assert (
         client.post(
             f"/portal/imports/{batch.id}/generate",
+            data={"csrf": _csrf(detail.text), "confirm": "yes"},
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/portal/partners/{partner.id}/versions/{version.id}/restore",
             data={"csrf": _csrf(detail.text), "confirm": "yes"},
         ).status_code
         == 403
@@ -652,7 +659,7 @@ def test_partner_page_offers_only_the_upload_flow(portal) -> None:
     _login(client)
     detail = client.get(f"/portal/partners/{partner_b.id}")
     assert "Nenhum relatório ainda" in detail.text
-    assert "/portal/imports/new" not in detail.text
+    assert f"/portal/imports/new?parceiro={partner_b.id}" in detail.text
     for retired in ("open", "regenerate"):
         response = client.post(
             f"/portal/partners/{partner_b.id}/{retired}", data={"csrf": _csrf(detail.text)}
@@ -764,10 +771,11 @@ def test_admin_can_upload_private_pdf_and_duplicate_is_idempotent(
     assert {"pdf_upload_succeeded", "pdf_upload_duplicate"} <= actions
 
 
-def test_pdf_upload_requires_admin_and_csrf(portal) -> None:
+def test_pdf_upload_by_team_requires_csrf(portal) -> None:
     client, partner, _, _ = portal
     assert _login(client).status_code == 303
-    assert client.get("/portal/imports/new").status_code == 403
+    assert client.get("/portal/imports/new").status_code == 200
+    assert client.get("/portal/admin/users").status_code == 403
 
     client.post("/portal/logout", data={"csrf": _csrf(client.get("/portal/partners").text)})
     assert _login(client, "synthetic-admin", "synthetic-long-password-admin").status_code == 303
@@ -855,8 +863,8 @@ def test_pdf_review_routes_filter_csrf_and_conflict(portal, db_session: Session,
     assert client.get("/portal/imports").status_code == 401
     assert client.get(f"/portal/imports/{batch.id}").status_code == 401
     _login(client)
-    assert client.get("/portal/imports").status_code == 403
-    assert client.get(f"/portal/imports/{batch.id}").status_code == 403
+    assert client.get("/portal/imports").status_code == 200
+    assert client.get(f"/portal/imports/{batch.id}").status_code == 200
     assert (
         client.post(f"/portal/imports/{batch.id}/review/reject", data={"csrf": "bad"}).status_code
         == 403
@@ -1257,6 +1265,7 @@ def test_portal_visual_layout_and_palette(portal) -> None:
         "batch": batch_html,
         "partner_admin": partner_admin_html,
         "reports": client.get("/portal/reports").text,
+        "users": client.get("/portal/admin/users").text,
     }
 
     async def check() -> None:
@@ -1664,14 +1673,17 @@ def test_api_failure_after_parse_offers_retry_and_shows_on_home(portal, db_sessi
     assert "Em andamento" in home and "Conferindo no Advbox" in home
 
 
-def test_home_offers_upload_to_admins_only_with_themed_month_grid(portal) -> None:
+def test_home_offers_upload_to_team_with_month_select(portal) -> None:
     from partner_reports.web.routes.portal import _today
 
     client, partner, _, version = portal
     _login(client)
     viewer_home = client.get("/portal/partners").text
-    assert 'action="/portal/imports/new"' not in viewer_home
-    assert "Precisa da sua atenção" not in viewer_home
+    # The team role also sends PDFs and follows uploads (D-056); only admin pages are hidden.
+    assert 'action="/portal/imports/new"' in viewer_home
+    assert "Precisa da sua atenção" in viewer_home
+    assert 'href="/portal/imports"' in viewer_home
+    assert 'href="/portal/admin/users"' not in viewer_home
     assert "/portal/reports" in viewer_home
     reports_page = client.get("/portal/reports").text
     assert "Relatórios prontos" in reports_page
@@ -1686,3 +1698,161 @@ def test_home_offers_upload_to_admins_only_with_themed_month_grid(portal) -> Non
     assert f'<option value="{_today():%Y-%m}" selected>' in home
     assert "(até hoje)" in home
     assert f'<option value="{partner.id}"' in home
+
+
+def _access_token(html: str) -> str:
+    match = re.search(r"/portal/access/([A-Za-z0-9_-]{20,})", html)
+    assert match
+    return match.group(1)
+
+
+def _redeem(client: TestClient, token: str, password: str, confirm: str | None = None):
+    page = client.get(f"/portal/access/{token}")
+    assert page.status_code == 200
+    return client.post(
+        f"/portal/access/{token}",
+        data={
+            "csrf": _csrf(page.text),
+            "new_password": password,
+            "confirm_password": password if confirm is None else confirm,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_admin_invites_account_and_holder_defines_own_password(portal, db_session) -> None:
+    from partner_reports.persistence.models import PortalAccessLink
+
+    client, *_ = portal
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get("/portal/admin/users")
+    assert page.status_code == 200
+    assert 'href="/portal/admin/users"' in page.text
+    created = client.post(
+        "/portal/admin/users",
+        data={
+            "csrf": _csrf(page.text),
+            "name": "Pessoa Sintética",
+            "login": "pessoa.sintetica",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 200
+    assert "Envie este link para Pessoa Sintética" in created.text
+    token = _access_token(created.text)
+    link = db_session.scalar(select(PortalAccessLink).order_by(PortalAccessLink.created_at.desc()))
+    assert link.token_hash != token and len(link.token_hash) == 64
+    duplicate = client.post(
+        "/portal/admin/users",
+        data={"csrf": _csrf(page.text), "name": "Outra", "login": "pessoa.sintetica"},
+    )
+    assert duplicate.status_code == 400 and "já está em uso" in duplicate.text
+    client.post("/portal/logout", data={"csrf": _csrf(page.text)})
+
+    # Before the link is used nobody can sign in to the new account.
+    assert _login(client, "pessoa.sintetica", "qualquer-senha-longa-123").status_code == 200
+    assert _redeem(client, token, "senha-sintetica-longa", "outra-coisa").status_code == 400
+    assert _redeem(client, token, "curta").status_code == 400
+    done = _redeem(client, token, "senha-sintetica-longa")
+    assert done.status_code == 303
+    assert done.headers["location"] == "/portal/login?senha=definida"
+    assert "Senha definida" in client.get("/portal/login?senha=definida").text
+    assert _login(client, "pessoa.sintetica", "senha-sintetica-longa").status_code == 303
+    home = client.get("/portal/partners").text
+    assert 'href="/portal/admin/users"' not in home
+    assert client.get("/portal/admin/users").status_code == 403
+
+    reused = client.get(f"/portal/access/{token}")
+    assert reused.status_code == 404 and "Link inválido ou expirado" in reused.text
+    actions = set(db_session.scalars(select(AuditEvent.action)))
+    assert {"account_created", "access_link_issued", "access_link_redeemed"} <= actions
+    stored = json.dumps([str(row) for row in db_session.execute(select(AuditEvent)).all()])
+    assert token not in stored
+
+
+def test_reset_link_replaces_password_and_older_links(portal, db_session) -> None:
+    from partner_reports.persistence.models import PortalAccessLink
+
+    client, *_ = portal
+    assert _login(client).status_code == 303
+    viewer = db_session.scalar(
+        select(AppUser)
+        .join(PortalCredential, PortalCredential.user_id == AppUser.id)
+        .where(PortalCredential.login_name == "synthetic-viewer")
+    )
+    client.post("/portal/logout", data={"csrf": _csrf(client.get("/portal/partners").text)})
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get("/portal/admin/users").text
+    first = client.post(f"/portal/admin/users/{viewer.id}/link", data={"csrf": _csrf(page)})
+    assert "A senha anterior já deixou de valer" in first.text
+    second = client.post(f"/portal/admin/users/{viewer.id}/link", data={"csrf": _csrf(page)})
+    old_token, new_token = _access_token(first.text), _access_token(second.text)
+    own = db_session.scalar(
+        select(AppUser)
+        .join(PortalCredential, PortalCredential.user_id == AppUser.id)
+        .where(PortalCredential.login_name == "synthetic-admin")
+    )
+    refused = client.post(f"/portal/admin/users/{own.id}/link", data={"csrf": _csrf(page)})
+    assert refused.status_code == 400
+    client.post("/portal/logout", data={"csrf": _csrf(page)})
+
+    assert _login(client).status_code == 200  # Old password no longer works.
+    assert client.get(f"/portal/access/{old_token}").status_code == 404
+    assert _redeem(client, new_token, "senha-nova-sintetica-longa").status_code == 303
+    assert _login(client, password="senha-nova-sintetica-longa").status_code == 303
+
+    expired = db_session.scalar(
+        select(PortalAccessLink).where(PortalAccessLink.user_id == viewer.id).limit(1)
+    )
+    assert expired.used_at is not None or expired.expires_at <= datetime.now(UTC)
+
+
+def test_account_rules_keep_an_admin_and_disable_ends_access(portal, db_session) -> None:
+    from partner_reports.web.accounts import AccountConflict, set_active
+
+    client, *_ = portal
+    accounts = {
+        login: db_session.scalar(
+            select(AppUser)
+            .join(PortalCredential, PortalCredential.user_id == AppUser.id)
+            .where(PortalCredential.login_name == login)
+        )
+        for login in ("synthetic-viewer", "synthetic-admin")
+    }
+    viewer, admin = accounts["synthetic-viewer"], accounts["synthetic-admin"]
+    _login(client, "synthetic-admin", "synthetic-long-password-admin")
+    page = client.get("/portal/admin/users").text
+    own = client.post(f"/portal/admin/users/{admin.id}/status/inactive", data={"csrf": _csrf(page)})
+    assert own.status_code == 400 and "própria conta" in own.text
+    assert (
+        client.post(
+            f"/portal/admin/users/{viewer.id}/status/bogus", data={"csrf": _csrf(page)}
+        ).status_code
+        == 404
+    )
+    promoted = client.post(
+        f"/portal/admin/users/{viewer.id}/role/admin", data={"csrf": _csrf(page)}
+    )
+    assert promoted.status_code == 200
+    assert "Administrador" in client.get("/portal/admin/users").text
+    client.post(f"/portal/admin/users/{viewer.id}/role/viewer", data={"csrf": _csrf(page)})
+    others = db_session.scalars(
+        select(AppUser).where(AppUser.id != admin.id, AppUser.status == "active")
+    ).all()
+    for other in others:
+        other.status = "inactive"
+    db_session.flush()
+    with pytest.raises(AccountConflict, match="pelo menos um administrador"):
+        set_active(db_session, admin, viewer, active=False)
+    for other in others:
+        other.status = "active"
+    db_session.flush()
+
+    issued = client.post(f"/portal/admin/users/{viewer.id}/link", data={"csrf": _csrf(page)})
+    token = _access_token(issued.text)
+    client.post(f"/portal/admin/users/{viewer.id}/status/inactive", data={"csrf": _csrf(page)})
+    db_session.refresh(viewer)
+    assert viewer.status == "inactive"
+    assert client.get(f"/portal/access/{token}").status_code == 404
+    actions = set(db_session.scalars(select(AuditEvent.action)))
+    assert {"account_role_changed", "account_disabled"} <= actions

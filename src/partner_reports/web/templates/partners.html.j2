@@ -8,10 +8,10 @@
 <body>
   {% include "_header.html.j2" %}
   <main class="container" id="main">
-    <div class="page-heading home-heading"><div><p class="eyebrow">Início</p><h1>Relatórios de parceiros</h1><p class="muted">{% if is_admin %}Escolha o parceiro e o mês, envie o PDF e baixe o relatório quando ficar pronto.{% else %}Consulte os relatórios prontos de cada parceiro.{% endif %}</p></div></div>
+    <div class="page-heading home-heading"><div><p class="eyebrow">Início</p><h1>Relatórios de parceiros</h1><p class="muted">{% if can_report %}Escolha o parceiro e o mês, envie o PDF e baixe o relatório quando ficar pronto.{% else %}Consulte os relatórios prontos de cada parceiro.{% endif %}</p></div></div>
     {% if demo %}<div class="notice" role="status"><strong>Ambiente de prévia sintética.</strong> Nenhum dado real ou relatório externo está publicado.</div>{% endif %}
 
-    {% if is_admin %}
+    {% if can_report %}
     <section class="home-section reveal" aria-labelledby="novo">
       <div class="panel upload-panel hero-card">
         <div class="hero-card-head"><h2 id="novo">Novo relatório</h2><p class="muted">Três passos. A conferência no Advbox começa sozinha.</p></div>

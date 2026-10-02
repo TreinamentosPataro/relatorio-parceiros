@@ -43,6 +43,10 @@ _ACTIONS = frozenset(
         "password_changed",
         "password_change_failed",
         "password_reset",
+        "account_enabled",
+        "account_role_changed",
+        "access_link_issued",
+        "access_link_redeemed",
     }
 )
 _ENTITIES = frozenset({"none", "user", "partner", "report_version", "pdf_import_batch"})

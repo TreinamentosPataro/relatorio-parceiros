@@ -5,14 +5,14 @@
   {% include "_header.html.j2" %}
   <main class="container" id="main">
     <a class="back-link" href="/portal/partners">← Relatórios</a>
-    <div class="page-heading detail-heading compact-heading"><div><p class="eyebrow">Parceiro</p><h1>{{ partner.name }}</h1></div>{% if is_admin %}<a class="button button-primary" href="/portal/imports/new?parceiro={{ partner.id }}">Novo relatório</a>{% endif %}</div>
+    <div class="page-heading detail-heading compact-heading"><div><p class="eyebrow">Parceiro</p><h1>{{ partner.name }}</h1></div>{% if can_report %}<a class="button button-primary" href="/portal/imports/new?parceiro={{ partner.id }}">Novo relatório</a>{% endif %}</div>
     {% if demo %}<div class="notice" role="status"><strong>Prévia sintética.</strong> Arquivos de demonstração locais; nenhuma publicação real.</div>{% endif %}
     <section class="panel action-panel" aria-label="Relatório atual">
       {% if latest_valid %}
       <div><p class="eyebrow">Relatório atual</p><h2>Período {{ latest_valid.period_start|data }} a {{ latest_valid.period_end|data }}</h2><p class="muted">Gerado em {{ latest_valid.generated_at|datahora }} · v{{ latest_valid.version }}</p></div>
       <div class="action-group"><a class="button button-primary" href="/portal/partners/{{ partner.id }}/versions/{{ latest_valid.id }}/html">Ver relatório</a><a class="button button-secondary" href="/portal/partners/{{ partner.id }}/versions/{{ latest_valid.id }}/pdf">Baixar PDF</a></div>
       {% else %}
-      <div><p class="eyebrow">Relatório atual</p><h2>{% if state == 'gerando' %}Relatório em geração{% else %}Nenhum relatório ainda{% endif %}</h2><p class="muted">{% if state == 'gerando' %}Atualize a página em instantes.{% elif is_admin %}Use “Novo relatório” e envie o PDF do parceiro exportado do Advbox.{% else %}Ainda não há relatório para este parceiro.{% endif %}</p></div>
+      <div><p class="eyebrow">Relatório atual</p><h2>{% if state == 'gerando' %}Relatório em geração{% else %}Nenhum relatório ainda{% endif %}</h2><p class="muted">{% if state == 'gerando' %}Atualize a página em instantes.{% elif can_report %}Use “Novo relatório” e envie o PDF do parceiro exportado do Advbox.{% else %}Ainda não há relatório para este parceiro.{% endif %}</p></div>
       {% endif %}
     </section>
     {% if batches %}<section class="history-section"><div class="section-heading"><h2>Últimos envios</h2></div><div class="panel list-panel"><div class="table-wrap"><table><thead><tr><th scope="col">Enviado em</th><th scope="col">Período</th><th scope="col">Situação</th><th scope="col"><span class="visually-hidden">Ação</span></th></tr></thead><tbody>{% for batch in batches %}<tr><td data-label="Enviado em">{{ batch.created_at|datahora }}</td><td data-label="Período">{{ batch.period_start|data }} a {{ batch.period_end|data }}</td><td data-label="Situação"><span class="status-pill">{{ batch.state|estado }}</span></td><td data-label="Ação"><a class="row-action" href="/portal/imports/{{ batch.id }}">Abrir <span aria-hidden="true">→</span></a></td></tr>{% endfor %}</tbody></table></div></div></section>{% endif %}

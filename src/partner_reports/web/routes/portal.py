@@ -62,6 +62,19 @@ from partner_reports.persistence.models import (
     SyncChangedPartner,
     SyncRun,
 )
+from partner_reports.web.accounts import (
+    ACCESS_LINK_AGE,
+    DISPLAY_NAME_MAX,
+    AccountConflict,
+    create_account,
+    display_name,
+    find_access_link,
+    issue_access_link,
+    list_accounts,
+    redeem_access_link,
+    set_active,
+    set_admin,
+)
 from partner_reports.web.artifacts import (
     ArtifactUnavailable,
     SyntheticArtifactStore,
@@ -489,6 +502,16 @@ def _require_admin(db: Session, user: AppUser) -> None:
         raise HTTPException(status_code=403, detail="Acesso não autorizado")
 
 
+_REPORT_ROLES = frozenset({"portal_viewer", "portal_admin"})
+
+
+def _require_report_operator(db: Session, user: AppUser) -> None:
+    # Both roles send PDFs, approve and generate reports (D-056); admins also manage
+    # users, partners and version restores.
+    if not get_user_roles(db, user.id) & _REPORT_ROLES:
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
+
+
 def _active_partners(db: Session, settings: Settings) -> list[Partner]:
     return db.scalars(
         select(Partner)
@@ -522,10 +545,12 @@ def _ready_reports(db: Session, settings: Settings, limit: int = 100) -> list[di
 
 
 def _nav(db: Session, user: AppUser, settings: Settings, active: str) -> dict:
-    is_admin = "portal_admin" in get_user_roles(db, user.id)
+    roles = get_user_roles(db, user.id)
+    is_admin = "portal_admin" in roles
     return {
         "nav": active,
         "is_admin": is_admin,
+        "can_report": bool(roles & _REPORT_ROLES),
         "partner_admin_link": is_admin and not settings.synthetic_validation_only,
     }
 
@@ -668,7 +693,7 @@ def js() -> Response:
 
 
 @router.get("/portal/login")
-def login_page(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+def login_page(request: Request, senha: str = "", db: Session = _DB_DEPENDENCY) -> Response:
     _, user = _current(db, request)
     if user:
         return RedirectResponse("/portal/partners", status_code=303)
@@ -676,7 +701,12 @@ def login_page(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
     token, record = new_session(db)
     revoke_session(db, old)
     db.commit()
-    response = _render("login.html.j2", csrf=record.csrf_token, error=None)
+    response = _render(
+        "login.html.j2",
+        csrf=record.csrf_token,
+        error=None,
+        notice="Senha definida. Entre com o seu login." if senha == "definida" else None,
+    )
     _cookie(response, token)
     return response
 
@@ -874,9 +904,9 @@ def partners(
         total_pages=total_pages,
         total=len(rows),
         demo=settings.synthetic_validation_only,
-        attention=attention if nav["is_admin"] else [],
-        in_progress=in_progress if nav["is_admin"] else [],
-        upload_partners=_active_partners(db, settings) if nav["is_admin"] else [],
+        attention=attention if nav["can_report"] else [],
+        in_progress=in_progress if nav["can_report"] else [],
+        upload_partners=_active_partners(db, settings) if nav["can_report"] else [],
         months=_recent_months(),
         selected=None,
         max_mib=MAX_PDF_BYTES // (1024 * 1024),
@@ -952,14 +982,14 @@ def pdf_upload_page(
     request: Request, parceiro: uuid.UUID | None = None, db: Session = _DB_DEPENDENCY
 ) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     return _upload_page(db, user, record.csrf_token, request.app.state.settings, selected=parceiro)
 
 
 @router.post("/portal/imports/new")
 async def pdf_upload(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     user_id = user.id
     csrf_token = record.csrf_token
     try:
@@ -1144,7 +1174,7 @@ def pdf_import_list(
     db: Session = _DB_DEPENDENCY,
 ) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     allowed = {
         "all",
         "uploaded",
@@ -1218,7 +1248,7 @@ def pdf_import_detail(
     db: Session = _DB_DEPENDENCY,
 ) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     row = db.execute(
         select(PdfImportBatch, PdfSourceDocument, Partner)
         .join(PdfSourceDocument, PdfSourceDocument.id == PdfImportBatch.source_document_id)
@@ -1352,7 +1382,7 @@ async def pdf_review_action(
     batch_id: uuid.UUID, action: str, request: Request, db: Session = _DB_DEPENDENCY
 ) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     form = await _form(request)
     _csrf(form, record)
     if form.get("confirm") != "yes" or action not in {
@@ -1453,7 +1483,7 @@ async def approve_and_generate(
     """Approve the upload (replacing a single earlier approval of the month) and queue it."""
 
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     form = await _form(request)
     _csrf(form, record)
     if form.get("confirm") != "yes":
@@ -1532,7 +1562,7 @@ async def generate_from_pdf_batch(
     batch_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
 ) -> Response:
     record, user = _need_user(db, request)
-    _require_admin(db, user)
+    _require_report_operator(db, user)
     form = await _form(request)
     _csrf(form, record)
     if form.get("confirm") != "yes":
@@ -1599,6 +1629,7 @@ def _partner_admin_page(
         max_name=_PARTNER_NAME_MAX,
         nav="admin",
         is_admin=True,
+        can_report=True,
         partner_admin_link=True,
     )
     response.status_code = status_code
@@ -1964,3 +1995,244 @@ def install_portal(app) -> None:
                 "default-src 'self'; form-action 'self'; frame-ancestors 'none'",
             )
         return response
+
+
+def _require_user_admin(db: Session, request: Request) -> tuple[PortalSession, AppUser]:
+    record, user = _need_user(db, request)
+    _require_admin(db, user)
+    return record, user
+
+
+def _users_page(
+    db: Session,
+    request: Request,
+    user: AppUser,
+    csrf: str,
+    *,
+    issued: dict | None = None,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    nav = _nav(db, user, request.app.state.settings, "users")
+    response = _render(
+        "user_admin.html.j2",
+        user=user,
+        csrf=csrf,
+        accounts=list_accounts(db),
+        issued=issued,
+        error=error,
+        max_name=DISPLAY_NAME_MAX,
+        link_hours=int(ACCESS_LINK_AGE.total_seconds() // 3600),
+        **nav,
+    )
+    response.status_code = status_code
+    return response
+
+
+def _issued(request: Request, token: str, target: AppUser, login_name: str, purpose: str) -> dict:
+    return {
+        "url": f"{str(request.base_url).rstrip('/')}/portal/access/{token}",
+        "name": target.display_name or login_name,
+        "login": login_name,
+        "purpose": purpose,
+    }
+
+
+def _target_account(db: Session, user_id: uuid.UUID) -> tuple[AppUser, str]:
+    target = db.get(AppUser, user_id, with_for_update=True)
+    credential = db.scalar(select(PortalCredential).where(PortalCredential.user_id == user_id))
+    if target is None or credential is None:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+    return target, credential.login_name
+
+
+@router.get("/portal/admin/users")
+def user_admin(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _require_user_admin(db, request)
+    return _users_page(db, request, user, record.csrf_token)
+
+
+@router.post("/portal/admin/users")
+async def create_user(request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    record, user = _require_user_admin(db, request)
+    form = await _form(request)
+    _csrf(form, record)
+    try:
+        name = display_name(form.get("name", ""))
+        try:
+            login_name = normalize_login(form.get("login", ""))
+        except ValueError:
+            raise AccountConflict(
+                "O login deve ter 3 a 80 caracteres: letras minúsculas, números, ponto, "
+                "hífen ou sublinhado."
+            ) from None
+        target, token, _ = create_account(
+            db, user, login_name=login_name, name=name, admin=form.get("role") == "admin"
+        )
+    except AccountConflict as exc:
+        db.rollback()
+        return _users_page(db, request, user, record.csrf_token, error=str(exc), status_code=400)
+    for action in ("account_created", "access_link_issued"):
+        _audit_commit(
+            db, request, action, actor_user_id=user.id, entity_type="user", entity_id=target.id
+        )
+    return _users_page(
+        db,
+        request,
+        user,
+        record.csrf_token,
+        issued=_issued(request, token, target, login_name, "invite"),
+    )
+
+
+@router.post("/portal/admin/users/{user_id}/link")
+async def issue_user_link(
+    user_id: uuid.UUID, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    record, user = _require_user_admin(db, request)
+    _csrf(await _form(request), record)
+    target, login_name = _target_account(db, user_id)
+    if target.id == user.id:
+        db.rollback()
+        return _users_page(
+            db,
+            request,
+            user,
+            record.csrf_token,
+            error="Para trocar a sua senha, use “Senha” no topo da página.",
+            status_code=400,
+        )
+    purpose = "invite" if target.last_login_at is None else "reset"
+    try:
+        token, _ = issue_access_link(db, target, user, purpose=purpose)
+    except AccountConflict as exc:
+        db.rollback()
+        return _users_page(db, request, user, record.csrf_token, error=str(exc), status_code=400)
+    _audit_commit(
+        db,
+        request,
+        "access_link_issued",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=target.id,
+    )
+    return _users_page(
+        db,
+        request,
+        user,
+        record.csrf_token,
+        issued=_issued(request, token, target, login_name, purpose),
+    )
+
+
+@router.post("/portal/admin/users/{user_id}/{field}/{value}")
+async def change_user(
+    user_id: uuid.UUID, field: str, value: str, request: Request, db: Session = _DB_DEPENDENCY
+) -> Response:
+    record, user = _require_user_admin(db, request)
+    _csrf(await _form(request), record)
+    choices = {"status": {"active", "inactive"}, "role": {"admin", "viewer"}}
+    if value not in choices.get(field, set()):
+        raise HTTPException(status_code=404, detail="Página não encontrada")
+    target, _ = _target_account(db, user_id)
+    try:
+        if field == "status":
+            changed = set_active(db, target, user, active=value == "active")
+            action = "account_enabled" if value == "active" else "account_disabled"
+        else:
+            changed = set_admin(db, target, user, admin=value == "admin")
+            action = "account_role_changed"
+    except AccountConflict as exc:
+        db.rollback()
+        return _users_page(db, request, user, record.csrf_token, error=str(exc), status_code=400)
+    if changed:
+        _audit_commit(
+            db, request, action, actor_user_id=user.id, entity_type="user", entity_id=target.id
+        )
+    else:
+        db.rollback()
+    return RedirectResponse("/portal/admin/users", status_code=303)
+
+
+def _access_page(
+    csrf: str | None,
+    *,
+    token: str = "",
+    login_name: str = "",
+    purpose: str = "",
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    response = _render(
+        "access_link.html.j2",
+        csrf=csrf,
+        token=token,
+        login_name=login_name,
+        purpose=purpose,
+        valid=csrf is not None,
+        min_length=MIN_PASSWORD_LENGTH,
+        error=error,
+    )
+    response.status_code = status_code
+    return response
+
+
+@router.get("/portal/access/{token}")
+def access_link_page(token: str, request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    found = find_access_link(db, token)
+    if found is None:
+        db.rollback()
+        return _access_page(None, status_code=404)
+    link, _, login_name = found
+    old = find_session(db, request.cookies.get(COOKIE_NAME))
+    session_token, session = new_session(db)
+    revoke_session(db, old)
+    db.commit()
+    response = _access_page(
+        session.csrf_token, token=token, login_name=login_name, purpose=link.purpose
+    )
+    _cookie(response, session_token)
+    return response
+
+
+@router.post("/portal/access/{token}")
+async def redeem_access(token: str, request: Request, db: Session = _DB_DEPENDENCY) -> Response:
+    form = await _form(request)
+    session = find_session(db, request.cookies.get(COOKIE_NAME))
+    _csrf(form, session)
+    found = find_access_link(db, token)
+    if found is None:
+        db.rollback()
+        return _access_page(None, status_code=404)
+    link, target, login_name = found
+    password = form.get("new_password", "")
+    error = None
+    if password != form.get("confirm_password", ""):
+        error = "A confirmação não coincide com a senha."
+    else:
+        try:
+            redeem_access_link(db, link, password)
+        except ValueError:
+            error = f"A senha deve ter entre {MIN_PASSWORD_LENGTH} e 256 caracteres."
+    if error:
+        db.rollback()
+        return _access_page(
+            session.csrf_token,
+            token=token,
+            login_name=login_name,
+            purpose=link.purpose,
+            error=error,
+            status_code=400,
+        )
+    revoke_session(db, session)
+    _audit_commit(
+        db,
+        request,
+        "access_link_redeemed",
+        actor_user_id=target.id,
+        entity_type="user",
+        entity_id=target.id,
+    )
+    response = RedirectResponse("/portal/login?senha=definida", status_code=303)
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response

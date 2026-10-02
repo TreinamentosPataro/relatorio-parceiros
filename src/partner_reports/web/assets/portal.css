@@ -206,3 +206,21 @@ tr:hover .row-action span{transform:translateX(4px)}
 .main-nav a{white-space:nowrap}
 @media(max-width:760px){.main-nav a{flex:1 1 auto;padding:6px 10px;font-size:.8rem}}
 .panel:not(.hero-card),.task,.ready-item{background:var(--white)}
+.issued-card{padding:24px;margin-bottom:28px;border-color:var(--line);background:linear-gradient(180deg,rgba(244,170,39,.09),rgba(244,170,39,.03))}
+.issued-card h2{margin:0 0 6px;font-size:1.2rem}
+.issued-card p{margin:0 0 14px}
+.copy-line{display:flex;gap:10px}
+.copy-input{flex:1;min-width:0;min-height:45px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--white);color:var(--text);font:.86rem ui-monospace,SFMono-Regular,Consolas,monospace}
+.user-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr) auto;gap:16px;align-items:end}
+.user-form .field{min-width:0}
+.row-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.row-actions form{margin:0}
+button.chip-button{cursor:pointer;background:var(--white);font-family:inherit}
+button.chip-button.is-primary{background:var(--gold)}
+.small-note{font-size:.84rem;margin:12px 0 0}
+.form-error{margin:0 0 20px}
+@media(max-width:900px){.user-form{grid-template-columns:1fr 1fr}.user-form .button{grid-column:1/-1}}
+@media(max-width:760px){.user-form{grid-template-columns:1fr}.copy-line{flex-direction:column}.row-actions{justify-content:flex-end}}
+@media(max-width:760px){.main-nav{flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none}.main-nav::-webkit-scrollbar{display:none}.main-nav a{flex:1 0 auto}}
+.person{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}.person strong{font-weight:650}
+@media(max-width:760px){.person{align-items:flex-end;text-align:right}}

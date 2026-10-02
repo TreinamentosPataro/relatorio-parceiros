@@ -8,6 +8,10 @@ O inventário não confirmou SSO corporativo nem proxy de autenticação. Para v
 
 O login tem limite de cinco falhas por janela de 15 minutos por endereço técnico de origem, com chave hash no banco. Sessões de login anônimas expiram em 20 minutos; autenticadas, em oito horas. O token é renovado no login, revogado no logout e nunca guardado em claro no banco. Formulários POST exigem CSRF associado à sessão. A etapa 10 acrescentou CLI autenticado para desativar contas e revogar sessões, limpeza de sessões vencidas e trilha de auditoria. O IP efetivo atrás do proxy da VPS, SSO/MFA, recuperação de conta, retenção e defesa contra abuso ainda precisam de homologação produtiva.
 
+## Contas (D-055)
+
+Administradores criam e mantêm contas em **Usuários** (`/portal/admin/users`). Cada conta nova recebe um link de convite de uso único, válido por 72 horas (`/portal/access/<token>`); a pessoa abre o link, vê o próprio login e define a senha. Para senha esquecida, o administrador gera um **link de nova senha**, que invalida a senha e as sessões atuais. Também é possível desativar/reativar e alternar entre equipe e administrador. Desde D-056, o papel **Equipe** (`portal_viewer`) envia PDFs, acompanha envios, aprova e gera relatórios; **Administrador** (`portal_admin`) faz o mesmo e também gerencia Usuários, Parceiros e a restauração de versões. Regras: ninguém altera a própria conta por essa tela, sempre resta um administrador ativo, só o hash do token é persistido e o link não entra em logs nem na auditoria. O comando `portal-user` continua como acesso de emergência no servidor.
+
 ## Fluxo de uso diário (F1, ADR-007)
 
 Desde 01/10/2026, a advogada (conta `portal_admin` individual) usa um único caminho:

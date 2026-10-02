@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Usuários · Relatórios de parceiros</title>
+  <link rel="stylesheet" href="/portal/assets.css">
+</head>
+<body>
+  {% include "_header.html.j2" %}
+  <main class="container" id="main">
+    <div class="page-heading"><div><p class="eyebrow">Administração</p><h1>Usuários</h1><p class="muted">Crie a conta e envie o link de acesso para a pessoa. Ela mesma define a senha; ninguém mais a vê.</p></div></div>
+
+    {% if issued %}
+    <section class="panel issued-card" aria-labelledby="link-title" role="status">
+      <h2 id="link-title">{{ 'Conta criada. ' if issued.purpose == 'invite' and not error else '' }}Envie este link para {{ issued.name }}</h2>
+      <p class="muted">Login: <strong>{{ issued.login }}</strong> · funciona uma única vez e vale por {{ link_hours }} horas.{% if issued.purpose == 'reset' %} A senha anterior já deixou de valer.{% endif %} Este link só aparece agora; se perder, gere outro.</p>
+      <div class="copy-line"><label class="visually-hidden" for="access-url">Link de acesso</label><input id="access-url" class="copy-input" value="{{ issued.url }}" readonly data-copy-source><button class="button button-primary" type="button" data-copy-button>Copiar link</button></div>
+    </section>
+    {% endif %}
+    {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+    <section class="home-section" aria-labelledby="novo-usuario">
+      <div class="panel hero-card">
+        <div class="hero-card-head"><h2 id="novo-usuario">Nova conta</h2><p class="muted">Depois de criar, copie o link e envie por WhatsApp ou e-mail.</p></div>
+        <form method="post" action="/portal/admin/users" class="user-form">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <div class="field"><label for="name">Nome</label><input id="name" name="name" required minlength="2" maxlength="{{ max_name }}" autocomplete="off" placeholder="Ex.: Maria Souza"></div>
+          <div class="field"><label for="login">Login</label><input id="login" name="login" required minlength="3" maxlength="80" pattern="[a-z0-9][a-z0-9._\-]{2,79}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Ex.: maria.souza"></div>
+          <div class="field"><label for="role">Papel</label><select id="role" name="role"><option value="viewer">Equipe: envia PDFs e gera relatórios</option><option value="admin">Administrador: também gerencia usuários e parceiros</option></select></div>
+          <button class="button button-primary" type="submit">Criar e gerar link <span aria-hidden="true" class="arrow">→</span></button>
+        </form>
+      </div>
+    </section>
+
+    <section class="home-section" aria-labelledby="contas">
+      <div class="section-heading"><h2 id="contas">Contas <span class="count-inline">{{ accounts|length }}</span></h2></div>
+      <div class="panel list-panel">
+        <div class="table-wrap"><table><thead><tr><th scope="col">Pessoa</th><th scope="col">Papel</th><th scope="col">Situação</th><th scope="col">Último acesso</th><th scope="col"><span class="visually-hidden">Ações</span></th></tr></thead><tbody>
+        {% for row in accounts %}{% set me = row.user.id == user.id %}<tr>
+          <td data-label="Pessoa"><div class="person"><strong>{{ row.user.display_name or row.login_name }}{% if me %} <span class="muted">(você)</span>{% endif %}</strong><span class="mono muted">{{ row.login_name }}</span></div></td>
+          <td data-label="Papel"><span class="status-pill">{{ 'Administrador' if row.is_admin else 'Equipe' }}</span></td>
+          <td data-label="Situação">{% if row.user.status != 'active' %}<span class="status-pill">Desativada</span>{% elif row.pending_link and row.user.last_login_at is none %}<span class="status-pill">Convite pendente</span>{% elif row.pending_link %}<span class="status-pill">Nova senha pendente</span>{% else %}<span class="status-pill">Ativa</span>{% endif %}</td>
+          <td data-label="Último acesso">{{ row.user.last_login_at|datahora }}</td>
+          <td data-label="Ações">{% if not me %}<div class="row-actions">
+            {% if row.user.status == 'active' %}<form method="post" action="/portal/admin/users/{{ row.user.id }}/link"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="chip-button is-primary" type="submit"{% if row.user.last_login_at is not none %} data-confirm="A senha atual de {{ row.user.display_name or row.login_name }} deixa de valer agora. Continuar?"{% endif %}>{{ 'Novo convite' if row.user.last_login_at is none else 'Link de nova senha' }}</button></form>
+            <form method="post" action="/portal/admin/users/{{ row.user.id }}/role/{{ 'viewer' if row.is_admin else 'admin' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="chip-button" type="submit">{{ 'Tornar equipe' if row.is_admin else 'Tornar administrador' }}</button></form>{% endif %}
+            <form method="post" action="/portal/admin/users/{{ row.user.id }}/status/{{ 'inactive' if row.user.status == 'active' else 'active' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="chip-button" type="submit"{% if row.user.status == 'active' %} data-confirm="Desativar a conta de {{ row.user.display_name or row.login_name }}? A pessoa é desconectada na hora."{% endif %}>{{ 'Desativar' if row.user.status == 'active' else 'Reativar' }}</button></form>
+          </div>{% else %}<a class="row-action" href="/portal/account/password">Trocar minha senha</a>{% endif %}</td>
+        </tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+      <p class="muted small-note">Desativar encerra as sessões na hora. O papel novo vale a partir do próximo login. O portal sempre mantém pelo menos um administrador ativo.</p>
+    </section>
+  </main>
+  <footer class="site-footer"><div class="container">Relatórios de parceiros · Acesso interno</div></footer>
+</body>
+</html>
