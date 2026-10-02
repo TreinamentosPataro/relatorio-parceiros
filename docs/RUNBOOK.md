@@ -107,6 +107,8 @@ sudo /opt/partner-reports/ops/deploy-synthetic-runtime.sh /tmp/partner-reports-s
 
 O atualizador recusa execução fora de `/opt/partner-reports`, pacotes com caminhos de segredo, backup concorrente e configuração incompleta. Ele constrói e testa a imagem antes da troca, pausa o timer, preserva os arquivos de ambiente, força `APP_ENV=production`, mantém o `PDF_DATA_SCOPE` ativo, aplica migrations, valida saúde interna/pública e reativa o timer. Se uma verificação posterior à troca falhar, restaura arquivos, imagem e ambiente anteriores. O diretório de rollback informado ao final deve ser preservado até a validação funcional do portal. Remova os dois arquivos temporários de `/tmp` somente depois dessa validação.
 
+Retenção de imagens (02/10/2026): depois de uma promoção verificada, o atualizador apaga as imagens `partner-reports:release-*` e `partner-reports:synthetic-*`, exceto a nova e a anterior (alvo do rollback), limpa o cache de build do Docker e mantém as cinco pastas `rollback-*` mais recentes. Cada imagem tem cerca de 2 GB; sem essa limpeza, o disco da VPS chegou a 45 de 50 GB. Volumes, imagens de outros projetos e a imagem de backup não são tocados, e nenhuma limpeza ocorre se a promoção falhar. Nunca use `docker system prune --volumes` nem `docker volume prune` na VPS.
+
 Desde o ADR-006, o atualizador também pausa `partner-reports-worker.timer`, se instalado, e recusa promover enquanto o worker estiver em execução. Proxy e app compartilham somente a rede interna `ingress` (`INGRESS_SUBNET`, padrão `10.254.18.0/29`); antes da primeira promoção com essa rede, confirme que a sub-rede não colide com redes existentes no host (`docker network inspect` das redes do outro projeto).
 
 ### Worker agendado (ADR-006)

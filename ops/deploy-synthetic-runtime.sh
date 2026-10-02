@@ -256,3 +256,29 @@ printf '%s\n' \
     'public_health=ok' \
     'backup_timer=active' \
     "rollback_directory=$rollback"
+
+# Retention: each release image is ~2 GB. Only after a verified promotion, keep the new
+# image and the previous one (the rollback target); docker rmi without -f never removes
+# an image in use by a container. Volumes, other projects and the backup image are untouched.
+previous_image=$(awk -F= '$1 == "APP_IMAGE" {sub(/^[^=]*=/, ""); print; exit}' "$rollback/compose.env")
+removed_images=0
+for old_image in $(docker images --format '{{.Repository}}:{{.Tag}}' \
+    | awk '/^partner-reports:(release|synthetic)-/'); do
+    if [ "$old_image" = "$new_image" ] || [ "$old_image" = "$previous_image" ]; then
+        continue
+    fi
+    if docker rmi "$old_image" >/dev/null 2>&1; then
+        removed_images=$((removed_images + 1))
+    fi
+done
+docker builder prune --all --force >/dev/null 2>&1 || true
+# Rollback directories are small; keep the five most recent.
+ls -1d "$releases_root"/rollback-* 2>/dev/null | sort | head -n -5 | while read -r old_rollback; do
+    case "$old_rollback" in
+        "$releases_root"/rollback-*) rm -rf -- "$old_rollback" ;;
+    esac
+done
+printf '%s\n' \
+    "kept_images=$new_image $previous_image" \
+    "removed_images=$removed_images" \
+    'build_cache=pruned'

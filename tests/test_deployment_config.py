@@ -226,6 +226,24 @@ def test_worker_timer_drains_queue_without_overlapping_runs() -> None:
     assert "set -x" not in installer
 
 
+def test_deployer_keeps_current_and_rollback_images_and_prunes_the_rest() -> None:
+    script = (ROOT / "ops" / "deploy-synthetic-runtime.sh").read_text(encoding="utf-8")
+
+    retention = script.index("# Retention:")
+    # Cleanup only runs after the promotion is verified, never before a possible rollback.
+    assert script.index("deployment_status=verified") < retention
+    assert script.index("completed=1") < retention
+    block = script[retention:]
+    assert '"$old_image" = "$new_image"' in block
+    assert '"$old_image" = "$previous_image"' in block
+    assert '"$rollback/compose.env"' in block
+    assert "/^partner-reports:(release|synthetic)-/" in block
+    assert 'docker rmi "$old_image"' in block and "rmi -f" not in block
+    assert "docker builder prune --all --force" in block
+    for forbidden in ("volume", "system prune", "--volumes"):
+        assert forbidden not in block
+
+
 def test_deployer_pauses_and_restores_worker_timer() -> None:
     script = (ROOT / "ops" / "deploy-synthetic-runtime.sh").read_text(encoding="utf-8")
 
