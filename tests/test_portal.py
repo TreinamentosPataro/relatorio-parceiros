@@ -1125,7 +1125,7 @@ def test_user_changes_own_password_and_other_sessions_end(portal, db_session) ->
     ("current", "new", "confirm", "message"),
     [
         ("wrong-current-password", "synthetic-new-password-long", None, "Senha atual incorreta"),
-        ("synthetic-long-password-viewer", "curta", None, "entre 14 e 256"),
+        ("synthetic-long-password-viewer", "curta", None, "entre 8 e 256"),
         (
             "synthetic-long-password-viewer",
             "synthetic-new-password-long",
@@ -1897,3 +1897,13 @@ def test_account_rules_keep_an_admin_and_disable_ends_access(portal, db_session)
     assert client.get(f"/portal/access/{token}").status_code == 404
     actions = set(db_session.scalars(select(AuditEvent.action)))
     assert {"account_role_changed", "account_disabled"} <= actions
+
+
+def test_password_minimum_is_eight_characters() -> None:
+    from partner_reports.web.security import MIN_PASSWORD_LENGTH, verify_password
+
+    assert MIN_PASSWORD_LENGTH == 8
+    with pytest.raises(ValueError, match="entre 8 e 256"):
+        hash_password("x" * 7)
+    stored = hash_password("abcd1234")
+    assert verify_password(stored, "abcd1234")

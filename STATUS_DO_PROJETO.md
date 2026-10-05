@@ -309,3 +309,4 @@ O Prompt 13 do plano original permanece apenas como histórico. O go-live agora 
 - Ações da tela de Usuários alinhadas em colunas fixas e centralizadas.
 - Verificação: 252 testes aprovados no Docker local (1 aviso de depreciação de dependência), com dois testes novos (convite expirado mantém a conta; relatório em tema claro) e testes de paleta atualizados. Ruff lint e formatação aprovados. A VPS ainda não recebeu essas mudanças.
 - Disco da VPS chegou a 45/50 GB por imagens de release (~2 GB cada) e cache de build acumulados. O atualizador passou a manter só a imagem nova e a anterior, limpar o cache de build e guardar as cinco pastas de rollback mais recentes; teste de configuração novo cobre a regra. Limpeza manual única orientada ao operador.
+- 05/10/2026: senha mínima do portal reduzida de 14 para 8 caracteres, por decisão do responsável (`MIN_PASSWORD_LENGTH`). Risco aceito registrado em `docs/PORTAL.md`. 254 testes, Ruff lint e formatação aprovados.

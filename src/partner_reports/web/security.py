@@ -24,7 +24,7 @@ SESSION_AGE = timedelta(hours=8)
 LOGIN_AGE = timedelta(minutes=20)
 LOGIN_WINDOW = timedelta(minutes=15)
 LOGIN_LIMIT = 5
-MIN_PASSWORD_LENGTH = 14
+MIN_PASSWORD_LENGTH = 8
 _LOGIN_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{2,79}")
 _HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 _DUMMY_HASH = _HASHER.hash("synthetic-placeholder-password")
